@@ -1,11 +1,14 @@
-"""
-Minimal app.py for a self-healing project.
+from flask import Flask, jsonify
+import random
+import string
 
-You can expand it using "sauron.py generate-code --repo <name> --prompt <prompt>"
-"""
+app = Flask(__name__)
 
-def main():
-    return "Hello from minimal app.py"
+@app.route('/generate', methods=['GET'])
+def generate_word():
+    letters = string.ascii_lowercase
+    word = ''.join(random.choice(letters) for i in range(10))
+    return jsonify({'word': word})
 
 if __name__ == "__main__":
-    print(main())
+    app.run(debug=True)
