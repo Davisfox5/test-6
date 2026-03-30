@@ -1,0 +1,913 @@
+/* ── State ─────────────────────────────────────────────────────────── */
+let currentProject = null;
+let markIn = null;
+let markOut = null;
+
+/* ── DOM refs ─────────────────────────────────────────────────────── */
+const $projectListScreen = document.getElementById("project-list-screen");
+const $taggingScreen     = document.getElementById("tagging-screen");
+const $projectsContainer = document.getElementById("projects-container");
+const $newProjectName    = document.getElementById("new-project-name");
+const $projectTitle      = document.getElementById("project-title");
+
+const $video        = document.getElementById("game-video");
+const $noVideoMsg   = document.getElementById("no-video-msg");
+const $videoUpload  = document.getElementById("video-upload");
+
+const $btnMarkIn    = document.getElementById("btn-mark-in");
+const $btnMarkOut   = document.getElementById("btn-mark-out");
+const $markInDisp   = document.getElementById("mark-in-display");
+const $markOutDisp  = document.getElementById("mark-out-display");
+const $clipTagType  = document.getElementById("clip-tag-type");
+const $clipLabel    = document.getElementById("clip-label");
+const $clipNotes    = document.getElementById("clip-notes");
+const $btnSaveClip  = document.getElementById("btn-save-clip");
+
+const $timeline     = document.getElementById("timeline");
+const $playhead     = document.getElementById("timeline-playhead");
+
+const $filterType   = document.getElementById("filter-tag-type");
+const $filterSearch = document.getElementById("filter-search");
+const $clipsList    = document.getElementById("clips-list");
+const $clipCount    = document.getElementById("clip-count-num");
+
+const $filterPlayer = document.getElementById("filter-player");
+const $playerChecks = document.getElementById("player-checkboxes");
+
+const $tagModal     = document.getElementById("tag-modal");
+const $tagTypeList  = document.getElementById("tag-type-list");
+
+const $playerModal  = document.getElementById("player-modal");
+const $playerList   = document.getElementById("player-list");
+
+/* ── Utilities ────────────────────────────────────────────────────── */
+function fmt(seconds) {
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, {
+    headers: { "Content-Type": "application/json", ...opts.headers },
+    ...opts,
+  });
+  return res.json();
+}
+
+function getTagColor(typeName) {
+  if (!currentProject) return "#555";
+  const tt = currentProject.tag_types.find(t => t.name === typeName);
+  return tt ? tt.color : "#555";
+}
+
+/* ── Project List ─────────────────────────────────────────────────── */
+async function loadProjects() {
+  const projects = await api("/api/projects");
+  $projectsContainer.innerHTML = "";
+  if (projects.length === 0) {
+    $projectsContainer.innerHTML = '<p style="color:#666;margin-top:20px;">No projects yet. Create one above.</p>';
+    return;
+  }
+  projects.forEach(p => {
+    const card = document.createElement("div");
+    card.className = "project-card";
+    card.innerHTML = `
+      <div>
+        <div class="name">${esc(p.name)}</div>
+        <div class="meta">${p.clips.length} clips &middot; ${p.video_filename ? "Video loaded" : "No video"}</div>
+      </div>
+      <button class="delete-btn" data-id="${p.id}" title="Delete project">&times;</button>
+    `;
+    card.addEventListener("click", (e) => {
+      if (e.target.classList.contains("delete-btn")) return;
+      openProject(p.id);
+    });
+    card.querySelector(".delete-btn").addEventListener("click", async (e) => {
+      e.stopPropagation();
+      if (confirm(`Delete project "${p.name}"?`)) {
+        await api(`/api/projects/${p.id}`, { method: "DELETE" });
+        loadProjects();
+      }
+    });
+    $projectsContainer.appendChild(card);
+  });
+}
+
+document.getElementById("btn-create-project").addEventListener("click", async () => {
+  const name = $newProjectName.value.trim();
+  if (!name) return;
+  await api("/api/projects", { method: "POST", body: JSON.stringify({ name }) });
+  $newProjectName.value = "";
+  loadProjects();
+});
+
+$newProjectName.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") document.getElementById("btn-create-project").click();
+});
+
+/* ── Open / Close Project ─────────────────────────────────────────── */
+async function openProject(id) {
+  currentProject = await api(`/api/projects/${id}`);
+  $projectTitle.textContent = currentProject.name;
+  $projectListScreen.classList.remove("active");
+  $taggingScreen.classList.add("active");
+
+  // Video
+  if (currentProject.video_filename) {
+    $video.src = `/videos/${currentProject.video_filename}`;
+    $video.classList.add("visible");
+    $noVideoMsg.classList.add("hidden");
+  } else {
+    $video.src = "";
+    $video.classList.remove("visible");
+    $noVideoMsg.classList.remove("hidden");
+  }
+
+  markIn = null;
+  markOut = null;
+  $markInDisp.textContent = "--:--";
+  $markOutDisp.textContent = "--:--";
+
+  if (!currentProject.players) currentProject.players = [];
+
+  populateTagSelectors();
+  populatePlayerSelectors();
+  renderClips();
+}
+
+document.getElementById("btn-back").addEventListener("click", () => {
+  exitAnnotationMode();
+  currentProject = null;
+  $video.pause();
+  $video.src = "";
+  $taggingScreen.classList.remove("active");
+  $projectListScreen.classList.add("active");
+  loadProjects();
+});
+
+/* ── Video Upload ─────────────────────────────────────────────────── */
+$videoUpload.addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  if (!file || !currentProject) return;
+  const fd = new FormData();
+  fd.append("video", file);
+  const res = await fetch(`/api/projects/${currentProject.id}/video`, {
+    method: "POST",
+    body: fd,
+  });
+  const data = await res.json();
+  if (data.filename) {
+    currentProject.video_filename = data.filename;
+    $video.src = `/videos/${data.filename}`;
+    $video.classList.add("visible");
+    $noVideoMsg.classList.add("hidden");
+  }
+});
+
+/* ── Mark In / Out ────────────────────────────────────────────────── */
+$btnMarkIn.addEventListener("click", () => {
+  markIn = $video.currentTime;
+  $markInDisp.textContent = fmt(markIn);
+});
+
+$btnMarkOut.addEventListener("click", () => {
+  markOut = $video.currentTime;
+  $markOutDisp.textContent = fmt(markOut);
+});
+
+/* ── Save Clip ────────────────────────────────────────────────────── */
+$btnSaveClip.addEventListener("click", async () => {
+  if (markIn === null || markOut === null) return alert("Set both IN and OUT marks first.");
+  if (markOut <= markIn) return alert("OUT mark must be after IN mark.");
+  if (!$clipTagType.value) return alert("Select a tag type.");
+
+  const clip = await api(`/api/projects/${currentProject.id}/clips`, {
+    method: "POST",
+    body: JSON.stringify({
+      tag_type: $clipTagType.value,
+      start: markIn,
+      end: markOut,
+      label: $clipLabel.value.trim(),
+      notes: $clipNotes.value.trim(),
+      players: getSelectedPlayerIds(),
+    }),
+  });
+
+  if (clip.error) return alert(clip.error);
+
+  currentProject.clips.push(clip);
+  $clipLabel.value = "";
+  $clipNotes.value = "";
+  clearPlayerSelection();
+  markIn = null;
+  markOut = null;
+  $markInDisp.textContent = "--:--";
+  $markOutDisp.textContent = "--:--";
+  renderClips();
+});
+
+/* ── Populate Tag Selectors ───────────────────────────────────────── */
+function populateTagSelectors() {
+  $clipTagType.innerHTML = '<option value="">-- Tag Type --</option>';
+  $filterType.innerHTML = '<option value="">All Types</option>';
+  currentProject.tag_types.forEach(tt => {
+    $clipTagType.innerHTML += `<option value="${esc(tt.name)}">${esc(tt.name)}</option>`;
+    $filterType.innerHTML  += `<option value="${esc(tt.name)}">${esc(tt.name)}</option>`;
+  });
+}
+
+/* ── Player Selectors ─────────────────────────────────────────────── */
+function populatePlayerSelectors() {
+  const players = currentProject.players || [];
+
+  // Player checkboxes for tagging
+  $playerChecks.innerHTML = "";
+  if (players.length === 0) {
+    $playerChecks.innerHTML = '<span class="no-players-msg">No players added yet</span>';
+  } else {
+    players.forEach(p => {
+      const chip = document.createElement("label");
+      chip.className = "player-chip";
+      const display = p.number ? `#${esc(p.number)} ${esc(p.name)}` : esc(p.name);
+      chip.innerHTML = `<input type="checkbox" value="${p.id}"> ${display}`;
+      chip.addEventListener("click", () => {
+        setTimeout(() => {
+          const cb = chip.querySelector("input");
+          chip.classList.toggle("selected", cb.checked);
+        }, 0);
+      });
+      $playerChecks.appendChild(chip);
+    });
+  }
+
+  // Player filter dropdown
+  $filterPlayer.innerHTML = '<option value="">All Players</option>';
+  players.forEach(p => {
+    const display = p.number ? `#${p.number} ${p.name}` : p.name;
+    $filterPlayer.innerHTML += `<option value="${p.id}">${esc(display)}</option>`;
+  });
+}
+
+function getSelectedPlayerIds() {
+  const ids = [];
+  $playerChecks.querySelectorAll("input[type=checkbox]:checked").forEach(cb => {
+    ids.push(cb.value);
+  });
+  return ids;
+}
+
+function clearPlayerSelection() {
+  $playerChecks.querySelectorAll("input[type=checkbox]").forEach(cb => {
+    cb.checked = false;
+    cb.closest(".player-chip").classList.remove("selected");
+  });
+}
+
+function getPlayerDisplay(playerId) {
+  const p = (currentProject.players || []).find(x => x.id === playerId);
+  if (!p) return playerId;
+  return p.number ? `#${p.number} ${p.name}` : p.name;
+}
+
+/* ── Render Clips ─────────────────────────────────────────────────── */
+function filteredClips() {
+  const typeFilter = $filterType.value;
+  const playerFilter = $filterPlayer.value;
+  const search = $filterSearch.value.toLowerCase();
+  return currentProject.clips.filter(c => {
+    if (typeFilter && c.tag_type !== typeFilter) return false;
+    if (playerFilter && !(c.players || []).includes(playerFilter)) return false;
+    if (search && !c.label.toLowerCase().includes(search) && !c.notes.toLowerCase().includes(search) && !c.tag_type.toLowerCase().includes(search)) return false;
+    return true;
+  });
+}
+
+function renderClips() {
+  const clips = filteredClips();
+  $clipCount.textContent = clips.length;
+  $clipsList.innerHTML = "";
+
+  // Sort by start time
+  clips.sort((a, b) => a.start - b.start);
+
+  clips.forEach(c => {
+    const color = getTagColor(c.tag_type);
+    const card = document.createElement("div");
+    card.className = "clip-card";
+    card.style.borderLeftColor = color;
+    card.innerHTML = `
+      <div class="clip-header">
+        <span class="clip-type" style="background:${color}">${esc(c.tag_type)}</span>
+        <span class="clip-times">${fmt(c.start)} - ${fmt(c.end)}</span>
+      </div>
+      ${c.label ? `<div class="clip-label">${esc(c.label)}</div>` : ""}
+      ${c.notes ? `<div class="clip-notes">${esc(c.notes)}</div>` : ""}
+      ${(c.players && c.players.length) ? `<div class="clip-players">${c.players.map(pid => `<span class="player-tag">${esc(getPlayerDisplay(pid))}</span>`).join("")}</div>` : ""}
+      <div class="clip-actions">
+        <button class="play-btn">Play</button>
+        <button class="annotate-btn">Annotate${(c.annotations && c.annotations.length) ? ` (${c.annotations.length})` : ""}</button>
+        <button class="rec-list-btn">Recordings${(c.recordings && c.recordings.length) ? ` (${c.recordings.length})` : ""}</button>
+        <button class="del-btn" data-id="${c.id}">Delete</button>
+      </div>
+    `;
+
+    card.querySelector(".play-btn").addEventListener("click", (e) => {
+      e.stopPropagation();
+      playClip(c);
+    });
+
+    card.querySelector(".annotate-btn").addEventListener("click", (e) => {
+      e.stopPropagation();
+      $video.currentTime = c.start;
+      $video.pause();
+      enterAnnotationMode(c);
+      renderAnnList();
+    });
+
+    card.querySelector(".rec-list-btn").addEventListener("click", (e) => {
+      e.stopPropagation();
+      openRecordingsModal(c);
+    });
+
+    card.querySelector(".del-btn").addEventListener("click", async (e) => {
+      e.stopPropagation();
+      await api(`/api/projects/${currentProject.id}/clips/${c.id}`, { method: "DELETE" });
+      currentProject.clips = currentProject.clips.filter(x => x.id !== c.id);
+      renderClips();
+    });
+
+    // Click card to seek to start
+    card.addEventListener("click", () => {
+      $video.currentTime = c.start;
+    });
+
+    $clipsList.appendChild(card);
+  });
+
+  renderTimeline();
+}
+
+$filterType.addEventListener("change", renderClips);
+$filterPlayer.addEventListener("change", renderClips);
+$filterSearch.addEventListener("input", renderClips);
+
+/* ── Play Clip ────────────────────────────────────────────────────── */
+let clipEndHandler = null;
+
+function playClip(clip) {
+  if (!$video.src) return;
+  $video.currentTime = clip.start;
+  $video.play();
+
+  // Stop at clip end
+  if (clipEndHandler) $video.removeEventListener("timeupdate", clipEndHandler);
+  clipEndHandler = () => {
+    if ($video.currentTime >= clip.end) {
+      $video.pause();
+      $video.removeEventListener("timeupdate", clipEndHandler);
+      clipEndHandler = null;
+    }
+  };
+  $video.addEventListener("timeupdate", clipEndHandler);
+}
+
+/* ── Timeline ─────────────────────────────────────────────────────── */
+function renderTimeline() {
+  // Remove old clip bars
+  $timeline.querySelectorAll(".clip-bar").forEach(el => el.remove());
+
+  const duration = $video.duration || 1;
+  const clips = filteredClips();
+
+  clips.forEach(c => {
+    const left = (c.start / duration) * 100;
+    const width = ((c.end - c.start) / duration) * 100;
+    const bar = document.createElement("div");
+    bar.className = "clip-bar";
+    bar.style.left = left + "%";
+    bar.style.width = Math.max(width, 0.5) + "%";
+    bar.style.background = getTagColor(c.tag_type);
+    bar.innerHTML = `<div class="clip-bar-label">${esc(c.tag_type)}</div>`;
+    bar.addEventListener("click", (e) => {
+      e.stopPropagation();
+      playClip(c);
+    });
+    $timeline.appendChild(bar);
+  });
+}
+
+// Update playhead
+$video.addEventListener("timeupdate", () => {
+  if (!$video.duration) return;
+  const pct = ($video.currentTime / $video.duration) * 100;
+  $playhead.style.left = pct + "%";
+});
+
+// Click timeline to seek
+$timeline.addEventListener("click", (e) => {
+  if (!$video.duration) return;
+  const rect = $timeline.getBoundingClientRect();
+  const pct = (e.clientX - rect.left) / rect.width;
+  $video.currentTime = pct * $video.duration;
+});
+
+// Re-render timeline when video metadata loads
+$video.addEventListener("loadedmetadata", renderTimeline);
+
+/* ── Tag Type Manager ─────────────────────────────────────────────── */
+document.getElementById("btn-manage-tags").addEventListener("click", () => {
+  renderTagTypeList();
+  $tagModal.classList.add("active");
+});
+
+document.getElementById("btn-close-modal").addEventListener("click", () => {
+  $tagModal.classList.remove("active");
+});
+
+function renderTagTypeList() {
+  $tagTypeList.innerHTML = "";
+  currentProject.tag_types.forEach((tt, i) => {
+    const row = document.createElement("div");
+    row.className = "tag-type-row";
+    row.innerHTML = `
+      <div class="swatch" style="background:${tt.color}"></div>
+      <span class="tag-name">${esc(tt.name)}</span>
+      <button class="remove-tag" data-idx="${i}">&times;</button>
+    `;
+    row.querySelector(".remove-tag").addEventListener("click", async () => {
+      currentProject.tag_types.splice(i, 1);
+      await saveTagTypes();
+      renderTagTypeList();
+      populateTagSelectors();
+    });
+    $tagTypeList.appendChild(row);
+  });
+}
+
+document.getElementById("btn-add-tag-type").addEventListener("click", async () => {
+  const name = document.getElementById("new-tag-name").value.trim();
+  const color = document.getElementById("new-tag-color").value;
+  if (!name) return;
+  currentProject.tag_types.push({ name, color });
+  await saveTagTypes();
+  document.getElementById("new-tag-name").value = "";
+  renderTagTypeList();
+  populateTagSelectors();
+});
+
+async function saveTagTypes() {
+  await api(`/api/projects/${currentProject.id}/tag_types`, {
+    method: "PUT",
+    body: JSON.stringify({ tag_types: currentProject.tag_types }),
+  });
+}
+
+/* ── Player Manager ───────────────────────────────────────────────── */
+document.getElementById("btn-manage-players").addEventListener("click", () => {
+  renderPlayerList();
+  $playerModal.classList.add("active");
+});
+
+document.getElementById("btn-close-player-modal").addEventListener("click", () => {
+  $playerModal.classList.remove("active");
+});
+
+function renderPlayerList() {
+  $playerList.innerHTML = "";
+  (currentProject.players || []).forEach(p => {
+    const row = document.createElement("div");
+    row.className = "player-row";
+    row.innerHTML = `
+      <span class="player-number">${p.number ? esc(p.number) : "-"}</span>
+      <span class="player-name">${esc(p.name)}</span>
+      <button class="remove-player" data-id="${p.id}">&times;</button>
+    `;
+    row.querySelector(".remove-player").addEventListener("click", async () => {
+      await api(`/api/projects/${currentProject.id}/players/${p.id}`, { method: "DELETE" });
+      currentProject.players = currentProject.players.filter(x => x.id !== p.id);
+      renderPlayerList();
+      populatePlayerSelectors();
+      renderClips();
+    });
+    $playerList.appendChild(row);
+  });
+}
+
+document.getElementById("btn-add-player").addEventListener("click", async () => {
+  const name = document.getElementById("new-player-name").value.trim();
+  const number = document.getElementById("new-player-number").value.trim();
+  if (!name) return;
+
+  const player = await api(`/api/projects/${currentProject.id}/players`, {
+    method: "POST",
+    body: JSON.stringify({ name, number }),
+  });
+
+  if (player.error) return alert(player.error);
+
+  currentProject.players.push(player);
+  document.getElementById("new-player-name").value = "";
+  document.getElementById("new-player-number").value = "";
+  renderPlayerList();
+  populatePlayerSelectors();
+});
+
+// Import roster from Excel/CSV
+document.getElementById("roster-upload").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  if (!file || !currentProject) return;
+
+  const $status = document.getElementById("import-status");
+  $status.textContent = "Importing...";
+
+  const fd = new FormData();
+  fd.append("file", file);
+
+  try {
+    const res = await fetch(`/api/projects/${currentProject.id}/players/import`, {
+      method: "POST",
+      body: fd,
+    });
+    const data = await res.json();
+    if (data.error) {
+      $status.textContent = data.error;
+    } else {
+      currentProject.players.push(...data.players);
+      renderPlayerList();
+      populatePlayerSelectors();
+      let msg = `Imported ${data.imported} player${data.imported !== 1 ? "s" : ""}`;
+      if (data.skipped) msg += `, ${data.skipped} duplicate${data.skipped !== 1 ? "s" : ""} skipped`;
+      $status.textContent = msg;
+    }
+  } catch (err) {
+    $status.textContent = "Import failed";
+  }
+
+  // Reset file input so the same file can be re-uploaded
+  e.target.value = "";
+  setTimeout(() => { $status.textContent = ""; }, 4000);
+});
+
+/* ── Export ────────────────────────────────────────────────────────── */
+function buildFilterParams() {
+  const params = new URLSearchParams();
+  if ($filterType.value) params.set("tag_type", $filterType.value);
+  if ($filterPlayer.value) params.set("player", $filterPlayer.value);
+  if ($filterSearch.value.trim()) params.set("search", $filterSearch.value.trim());
+  return params.toString();
+}
+
+document.getElementById("btn-export-csv").addEventListener("click", () => {
+  if (!currentProject) return;
+  const qs = buildFilterParams();
+  const url = `/api/projects/${currentProject.id}/export/csv${qs ? "?" + qs : ""}`;
+  window.location.href = url;
+});
+
+document.getElementById("btn-export-json").addEventListener("click", () => {
+  if (!currentProject) return;
+  const qs = buildFilterParams();
+  const url = `/api/projects/${currentProject.id}/export/json${qs ? "?" + qs : ""}`;
+  window.location.href = url;
+});
+
+document.getElementById("btn-export-video").addEventListener("click", async () => {
+  if (!currentProject) return;
+  const btn = document.getElementById("btn-export-video");
+  btn.classList.add("exporting");
+  btn.textContent = "Exporting...";
+  btn.disabled = true;
+
+  try {
+    const body = {};
+    if ($filterType.value) body.tag_type = $filterType.value;
+    if ($filterPlayer.value) body.player = $filterPlayer.value;
+    if ($filterSearch.value.trim()) body.search = $filterSearch.value.trim();
+
+    const res = await fetch(`/api/projects/${currentProject.id}/export/video`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    if (!res.ok) {
+      const err = await res.json();
+      alert(err.error || "Export failed");
+      return;
+    }
+
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${currentProject.name.replace(/ /g, "_")}_playlist.mp4`;
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    alert("Export failed: " + e.message);
+  } finally {
+    btn.classList.remove("exporting");
+    btn.textContent = "Video";
+    btn.disabled = false;
+  }
+});
+
+/* ── Annotations: Toolbar Wiring ──────────────────────────────────── */
+
+// Tool selection
+document.querySelectorAll(".ann-tool-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".ann-tool-btn").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    annTool = btn.dataset.tool;
+  });
+});
+
+// Color & width
+document.getElementById("ann-color").addEventListener("input", (e) => { annColor = e.target.value; });
+document.getElementById("ann-width").addEventListener("change", (e) => { annLineWidth = parseInt(e.target.value); });
+
+// Freeze frame
+document.getElementById("btn-ann-freeze").addEventListener("click", toggleFreezeFrame);
+document.getElementById("ann-freeze-dur").addEventListener("change", (e) => {
+  annFreezeDuration = parseFloat(e.target.value) || 2;
+});
+
+// Clear all
+document.getElementById("btn-ann-clear").addEventListener("click", () => {
+  if (annList.length === 0) return;
+  if (confirm("Remove all annotations from this clip?")) {
+    clearAllAnnotations();
+  }
+});
+
+// Done — auto-stop recording if active
+document.getElementById("btn-ann-done").addEventListener("click", async () => {
+  if (isRecording()) {
+    const blob = await stopRecording();
+    if (blob && annClip) {
+      document.getElementById("rec-status").textContent = "Saving...";
+      await uploadRecording(annClip.id, blob);
+      document.getElementById("rec-status").textContent = "";
+    }
+    resetRecordingUI();
+  }
+  exitAnnotationMode();
+  renderClips();
+});
+
+// Canvas mouse events
+const $annCanvas = document.getElementById("annotation-canvas");
+$annCanvas.addEventListener("mousedown", onAnnMouseDown);
+$annCanvas.addEventListener("mousemove", onAnnMouseMove);
+$annCanvas.addEventListener("mouseup", onAnnMouseUp);
+
+// Render annotations on video timeupdate
+$video.addEventListener("timeupdate", tickAnnotations);
+
+// Also render on play clip (with annotations visible)
+const _origPlayClip = playClip;
+playClip = function(clip) {
+  // If we're playing a clip that has annotations, load them for display
+  if (clip.annotations && clip.annotations.length > 0 && !annActive) {
+    annClip = clip;
+    annList = clip.annotations.map(a => ({...a, data: {...a.data}}));
+  }
+  _origPlayClip(clip);
+};
+
+/* ── Video Editor ─────────────────────────────────────────────────── */
+const $editorModal = document.getElementById("editor-modal");
+
+document.getElementById("btn-edit-video").addEventListener("click", () => {
+  if (!currentProject || !currentProject.video_filename) {
+    return alert("No video loaded in this project.");
+  }
+  // Pre-fill end with video duration if available
+  if ($video.duration) {
+    document.getElementById("trim-end").value = Math.floor($video.duration * 10) / 10;
+  }
+  document.getElementById("editor-status").textContent = "";
+  $editorModal.classList.add("active");
+});
+
+document.getElementById("btn-close-editor").addEventListener("click", () => {
+  $editorModal.classList.remove("active");
+});
+
+// Tab switching
+document.querySelectorAll(".editor-tab").forEach(tab => {
+  tab.addEventListener("click", () => {
+    document.querySelectorAll(".editor-tab").forEach(t => t.classList.remove("active"));
+    document.querySelectorAll(".editor-pane").forEach(p => p.classList.remove("active"));
+    tab.classList.add("active");
+    document.getElementById(`editor-tab-${tab.dataset.tab}`).classList.add("active");
+  });
+});
+
+// "Use current" buttons
+document.querySelectorAll(".editor-use-current").forEach(btn => {
+  btn.addEventListener("click", () => {
+    const target = document.getElementById(btn.dataset.target);
+    if (target && $video.currentTime !== undefined) {
+      target.value = Math.round($video.currentTime * 10) / 10;
+    }
+  });
+});
+
+async function doEditorAction(url, body, actionBtn) {
+  const $status = document.getElementById("editor-status");
+  actionBtn.disabled = true;
+  $status.textContent = "Processing...";
+
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (data.error) {
+      $status.textContent = data.error;
+    } else {
+      $status.textContent = data.message || "Done!";
+      // Reload project to get updated clips and video
+      await openProject(currentProject.id);
+    }
+  } catch (e) {
+    $status.textContent = "Operation failed: " + e.message;
+  } finally {
+    actionBtn.disabled = false;
+  }
+}
+
+document.getElementById("btn-do-trim").addEventListener("click", function() {
+  const start = parseFloat(document.getElementById("trim-start").value);
+  const end = parseFloat(document.getElementById("trim-end").value);
+  if (isNaN(start) || isNaN(end) || end <= start) {
+    return alert("Enter valid start and end times.");
+  }
+  if (!confirm(`This will permanently trim the video to ${start}s - ${end}s. Clips outside this range will be removed. Continue?`)) return;
+  doEditorAction(`/api/projects/${currentProject.id}/video/trim`, { start, end }, this);
+});
+
+document.getElementById("btn-do-split").addEventListener("click", function() {
+  const splitAt = parseFloat(document.getElementById("split-at").value);
+  if (isNaN(splitAt) || splitAt <= 0) {
+    return alert("Enter a valid split point.");
+  }
+  if (!confirm(`This will split the video at ${splitAt}s into two separate projects. Continue?`)) return;
+  doEditorAction(`/api/projects/${currentProject.id}/video/split`, { split_at: splitAt }, this);
+});
+
+document.getElementById("btn-do-cut").addEventListener("click", function() {
+  const cutStart = parseFloat(document.getElementById("cut-start").value);
+  const cutEnd = parseFloat(document.getElementById("cut-end").value);
+  if (isNaN(cutStart) || isNaN(cutEnd) || cutEnd <= cutStart) {
+    return alert("Enter valid cut start and end times.");
+  }
+  if (!confirm(`This will permanently remove ${cutStart}s - ${cutEnd}s from the video. Continue?`)) return;
+  doEditorAction(`/api/projects/${currentProject.id}/video/cut`, { cut_start: cutStart, cut_end: cutEnd }, this);
+});
+
+/* ── Recording: Wiring ────────────────────────────────────────────── */
+
+// Hide record button if not supported
+if (!isRecordingSupported()) {
+  document.getElementById("rec-controls").innerHTML =
+    '<span class="rec-not-supported">Recording not supported in this browser</span>';
+}
+
+document.getElementById("btn-rec-start").addEventListener("click", async () => {
+  if (!annClip) return alert("Enter annotation mode on a clip first.");
+  try {
+    await startRecording(annClip.id);
+    document.getElementById("btn-rec-start").style.display = "none";
+    document.getElementById("btn-rec-stop").style.display = "";
+    document.getElementById("rec-timer").style.display = "";
+    document.getElementById("rec-status").textContent = "Recording...";
+  } catch (e) {
+    alert("Could not start recording: " + e.message);
+  }
+});
+
+document.getElementById("btn-rec-stop").addEventListener("click", async () => {
+  const blob = await stopRecording();
+  document.getElementById("rec-status").textContent = "Saving...";
+  if (blob && annClip) {
+    await uploadRecording(annClip.id, blob);
+  }
+  resetRecordingUI();
+  document.getElementById("rec-status").textContent = "Saved!";
+  setTimeout(() => { document.getElementById("rec-status").textContent = ""; }, 2000);
+});
+
+function resetRecordingUI() {
+  document.getElementById("btn-rec-start").style.display = "";
+  document.getElementById("btn-rec-stop").style.display = "none";
+  document.getElementById("rec-timer").style.display = "none";
+}
+
+async function uploadRecording(clipId, blob) {
+  const fd = new FormData();
+  fd.append("recording", blob, `recording_${clipId}_${Date.now()}.webm`);
+  fd.append("duration", String(getRecordingDuration()));
+  const res = await fetch(
+    `/api/projects/${currentProject.id}/clips/${clipId}/recordings`,
+    { method: "POST", body: fd }
+  );
+  const data = await res.json();
+  if (!data.error) {
+    // Update local clip data
+    const clip = currentProject.clips.find(c => c.id === clipId);
+    if (clip) {
+      if (!clip.recordings) clip.recordings = [];
+      clip.recordings.push(data);
+    }
+  }
+  return data;
+}
+
+/* ── Recordings Modal ─────────────────────────────────────────────── */
+let recModalClip = null;
+
+function openRecordingsModal(clip) {
+  recModalClip = clip;
+  renderRecordingsList();
+  document.getElementById("rec-modal").classList.add("active");
+}
+
+document.getElementById("btn-close-rec-modal").addEventListener("click", () => {
+  document.getElementById("rec-modal").classList.remove("active");
+  recModalClip = null;
+  renderClips(); // refresh counts
+});
+
+function renderRecordingsList() {
+  const container = document.getElementById("rec-list");
+  const recs = recModalClip ? (recModalClip.recordings || []) : [];
+  container.innerHTML = "";
+
+  if (recs.length === 0) {
+    container.innerHTML = '<p class="rec-empty">No recordings yet. Use Annotate to record an analysis session.</p>';
+    return;
+  }
+
+  recs.forEach((r, i) => {
+    const item = document.createElement("div");
+    item.className = "rec-item";
+    const durDisplay = r.duration ? `${Math.floor(r.duration / 60)}:${String(r.duration % 60).padStart(2, "0")}` : "";
+    item.innerHTML = `
+      <div class="rec-item-header">
+        <span class="rec-label">Recording ${i + 1}</span>
+        ${durDisplay ? `<span class="rec-dur">${durDisplay}</span>` : ""}
+      </div>
+      <video controls preload="metadata" src="/recordings/${esc(r.filename)}"></video>
+      <div class="rec-actions">
+        <a href="/recordings/${esc(r.filename)}" download="${esc(r.filename)}">Download</a>
+        <button class="rec-del" data-id="${r.id}">Delete</button>
+      </div>
+    `;
+    item.querySelector(".rec-del").addEventListener("click", async () => {
+      await api(`/api/projects/${currentProject.id}/clips/${recModalClip.id}/recordings/${r.id}`, {
+        method: "DELETE",
+      });
+      recModalClip.recordings = recModalClip.recordings.filter(x => x.id !== r.id);
+      renderRecordingsList();
+    });
+    container.appendChild(item);
+  });
+}
+
+/* ── Keyboard Shortcuts ───────────────────────────────────────────── */
+document.addEventListener("keydown", (e) => {
+  // Only on tagging screen, not in inputs
+  if (!currentProject) return;
+  if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT" || e.target.tagName === "TEXTAREA") return;
+
+  switch (e.key.toLowerCase()) {
+    case "i":
+      $btnMarkIn.click();
+      break;
+    case "o":
+      $btnMarkOut.click();
+      break;
+    case " ":
+      e.preventDefault();
+      $video.paused ? $video.play() : $video.pause();
+      break;
+  }
+});
+
+/* ── Escape HTML ──────────────────────────────────────────────────── */
+function esc(str) {
+  const div = document.createElement("div");
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+/* ── Init ─────────────────────────────────────────────────────────── */
+initAnnotations($video);
+initRecording($video, document.getElementById("annotation-canvas"));
+loadProjects();
