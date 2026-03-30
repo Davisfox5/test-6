@@ -17,9 +17,13 @@ app = Flask(__name__, static_folder="static", template_folder="templates")
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 VIDEOS_DIR = os.path.join(DATA_DIR, "videos")
+RECORDINGS_DIR = os.path.join(DATA_DIR, "recordings")
 PROJECTS_FILE = os.path.join(DATA_DIR, "projects.json")
 
 os.makedirs(VIDEOS_DIR, exist_ok=True)
+os.makedirs(RECORDINGS_DIR, exist_ok=True)
+
+app.config["MAX_CONTENT_LENGTH"] = 500 * 1024 * 1024  # 500 MB
 
 
 def _load_projects():
@@ -233,6 +237,7 @@ def create_clip(project_id):
         "label": data.get("label", ""),
         "notes": data.get("notes", ""),
         "players": data.get("players", []),
+        "recordings": [],
     }
 
     if clip["end"] <= clip["start"]:
@@ -365,6 +370,85 @@ def clear_annotations(project_id, clip_id):
             _save_projects(projects)
             return jsonify({"ok": True})
     return jsonify({"error": "Clip not found"}), 404
+
+
+# ── Recordings CRUD ───────────────────────────────────────────────────
+
+@app.route("/api/projects/<project_id>/clips/<clip_id>/recordings", methods=["GET"])
+def list_recordings(project_id, clip_id):
+    projects = _load_projects()
+    if project_id not in projects:
+        return jsonify({"error": "Project not found"}), 404
+    for clip in projects[project_id]["clips"]:
+        if clip["id"] == clip_id:
+            return jsonify(clip.get("recordings", []))
+    return jsonify({"error": "Clip not found"}), 404
+
+
+@app.route("/api/projects/<project_id>/clips/<clip_id>/recordings", methods=["POST"])
+def upload_recording(project_id, clip_id):
+    projects = _load_projects()
+    if project_id not in projects:
+        return jsonify({"error": "Project not found"}), 404
+
+    clip_found = None
+    for clip in projects[project_id]["clips"]:
+        if clip["id"] == clip_id:
+            clip_found = clip
+            break
+    if not clip_found:
+        return jsonify({"error": "Clip not found"}), 404
+
+    if "recording" not in request.files:
+        return jsonify({"error": "No recording file provided"}), 400
+
+    rec_file = request.files["recording"]
+    rec_id = str(uuid.uuid4())[:8]
+    filename = f"{clip_id}_{rec_id}.webm"
+    rec_file.save(os.path.join(RECORDINGS_DIR, filename))
+
+    rec_meta = {
+        "id": rec_id,
+        "filename": filename,
+        "duration": request.form.get("duration", ""),
+    }
+
+    if "recordings" not in clip_found:
+        clip_found["recordings"] = []
+    clip_found["recordings"].append(rec_meta)
+    _save_projects(projects)
+    return jsonify(rec_meta), 201
+
+
+@app.route("/api/projects/<project_id>/clips/<clip_id>/recordings/<rec_id>", methods=["DELETE"])
+def delete_recording(project_id, clip_id, rec_id):
+    projects = _load_projects()
+    if project_id not in projects:
+        return jsonify({"error": "Project not found"}), 404
+
+    for clip in projects[project_id]["clips"]:
+        if clip["id"] == clip_id:
+            recs = clip.get("recordings", [])
+            target = None
+            for r in recs:
+                if r["id"] == rec_id:
+                    target = r
+                    break
+            if not target:
+                return jsonify({"error": "Recording not found"}), 404
+            # Remove file
+            path = os.path.join(RECORDINGS_DIR, target["filename"])
+            if os.path.exists(path):
+                os.remove(path)
+            clip["recordings"] = [r for r in recs if r["id"] != rec_id]
+            _save_projects(projects)
+            return jsonify({"ok": True})
+    return jsonify({"error": "Clip not found"}), 404
+
+
+@app.route("/recordings/<filename>")
+def serve_recording(filename):
+    return send_from_directory(RECORDINGS_DIR, filename)
 
 
 # ── Export ─────────────────────────────────────────────────────────────

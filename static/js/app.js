@@ -307,6 +307,7 @@ function renderClips() {
       <div class="clip-actions">
         <button class="play-btn">Play</button>
         <button class="annotate-btn">Annotate${(c.annotations && c.annotations.length) ? ` (${c.annotations.length})` : ""}</button>
+        <button class="rec-list-btn">Recordings${(c.recordings && c.recordings.length) ? ` (${c.recordings.length})` : ""}</button>
         <button class="del-btn" data-id="${c.id}">Delete</button>
       </div>
     `;
@@ -322,6 +323,11 @@ function renderClips() {
       $video.pause();
       enterAnnotationMode(c);
       renderAnnList();
+    });
+
+    card.querySelector(".rec-list-btn").addEventListener("click", (e) => {
+      e.stopPropagation();
+      openRecordingsModal(c);
     });
 
     card.querySelector(".del-btn").addEventListener("click", async (e) => {
@@ -600,10 +606,19 @@ document.getElementById("btn-ann-clear").addEventListener("click", () => {
   }
 });
 
-// Done
-document.getElementById("btn-ann-done").addEventListener("click", () => {
+// Done — auto-stop recording if active
+document.getElementById("btn-ann-done").addEventListener("click", async () => {
+  if (isRecording()) {
+    const blob = await stopRecording();
+    if (blob && annClip) {
+      document.getElementById("rec-status").textContent = "Saving...";
+      await uploadRecording(annClip.id, blob);
+      document.getElementById("rec-status").textContent = "";
+    }
+    resetRecordingUI();
+  }
   exitAnnotationMode();
-  renderClips();  // refresh annotation counts
+  renderClips();
 });
 
 // Canvas mouse events
@@ -625,6 +640,115 @@ playClip = function(clip) {
   }
   _origPlayClip(clip);
 };
+
+/* ── Recording: Wiring ────────────────────────────────────────────── */
+
+// Hide record button if not supported
+if (!isRecordingSupported()) {
+  document.getElementById("rec-controls").innerHTML =
+    '<span class="rec-not-supported">Recording not supported in this browser</span>';
+}
+
+document.getElementById("btn-rec-start").addEventListener("click", async () => {
+  if (!annClip) return alert("Enter annotation mode on a clip first.");
+  try {
+    await startRecording(annClip.id);
+    document.getElementById("btn-rec-start").style.display = "none";
+    document.getElementById("btn-rec-stop").style.display = "";
+    document.getElementById("rec-timer").style.display = "";
+    document.getElementById("rec-status").textContent = "Recording...";
+  } catch (e) {
+    alert("Could not start recording: " + e.message);
+  }
+});
+
+document.getElementById("btn-rec-stop").addEventListener("click", async () => {
+  const blob = await stopRecording();
+  document.getElementById("rec-status").textContent = "Saving...";
+  if (blob && annClip) {
+    await uploadRecording(annClip.id, blob);
+  }
+  resetRecordingUI();
+  document.getElementById("rec-status").textContent = "Saved!";
+  setTimeout(() => { document.getElementById("rec-status").textContent = ""; }, 2000);
+});
+
+function resetRecordingUI() {
+  document.getElementById("btn-rec-start").style.display = "";
+  document.getElementById("btn-rec-stop").style.display = "none";
+  document.getElementById("rec-timer").style.display = "none";
+}
+
+async function uploadRecording(clipId, blob) {
+  const fd = new FormData();
+  fd.append("recording", blob, `recording_${clipId}_${Date.now()}.webm`);
+  fd.append("duration", String(getRecordingDuration()));
+  const res = await fetch(
+    `/api/projects/${currentProject.id}/clips/${clipId}/recordings`,
+    { method: "POST", body: fd }
+  );
+  const data = await res.json();
+  if (!data.error) {
+    // Update local clip data
+    const clip = currentProject.clips.find(c => c.id === clipId);
+    if (clip) {
+      if (!clip.recordings) clip.recordings = [];
+      clip.recordings.push(data);
+    }
+  }
+  return data;
+}
+
+/* ── Recordings Modal ─────────────────────────────────────────────── */
+let recModalClip = null;
+
+function openRecordingsModal(clip) {
+  recModalClip = clip;
+  renderRecordingsList();
+  document.getElementById("rec-modal").classList.add("active");
+}
+
+document.getElementById("btn-close-rec-modal").addEventListener("click", () => {
+  document.getElementById("rec-modal").classList.remove("active");
+  recModalClip = null;
+  renderClips(); // refresh counts
+});
+
+function renderRecordingsList() {
+  const container = document.getElementById("rec-list");
+  const recs = recModalClip ? (recModalClip.recordings || []) : [];
+  container.innerHTML = "";
+
+  if (recs.length === 0) {
+    container.innerHTML = '<p class="rec-empty">No recordings yet. Use Annotate to record an analysis session.</p>';
+    return;
+  }
+
+  recs.forEach((r, i) => {
+    const item = document.createElement("div");
+    item.className = "rec-item";
+    const durDisplay = r.duration ? `${Math.floor(r.duration / 60)}:${String(r.duration % 60).padStart(2, "0")}` : "";
+    item.innerHTML = `
+      <div class="rec-item-header">
+        <span class="rec-label">Recording ${i + 1}</span>
+        ${durDisplay ? `<span class="rec-dur">${durDisplay}</span>` : ""}
+      </div>
+      <video controls preload="metadata" src="/recordings/${esc(r.filename)}"></video>
+      <div class="rec-actions">
+        <a href="/recordings/${esc(r.filename)}" download="${esc(r.filename)}">Download</a>
+        <button class="rec-del" data-id="${r.id}">Delete</button>
+      </div>
+    `;
+    item.querySelector(".rec-del").addEventListener("click", async () => {
+      await api(`/api/projects/${currentProject.id}/clips/${recModalClip.id}/recordings/${r.id}`, {
+        method: "DELETE",
+      });
+      recModalClip.recordings = recModalClip.recordings.filter(x => x.id !== r.id);
+      renderRecordingsList();
+    });
+    container.appendChild(item);
+  });
+}
 
 /* ── Keyboard Shortcuts ───────────────────────────────────────────── */
 document.addEventListener("keydown", (e) => {
@@ -655,4 +779,5 @@ function esc(str) {
 
 /* ── Init ─────────────────────────────────────────────────────────── */
 initAnnotations($video);
+initRecording($video, document.getElementById("annotation-canvas"));
 loadProjects();

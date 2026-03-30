@@ -538,3 +538,123 @@ def test_annotation_defaults(client):
     assert ann["endTime"] == 20
     assert ann["color"] == "#ff0000"
     assert ann["lineWidth"] == 3
+
+
+# ── Recording Tests ───────────────────────────────────────────────────
+
+def test_upload_and_list_recordings(client, tmp_path):
+    pid, cid = _make_project_with_clip(client)
+
+    # Upload a fake recording
+    from io import BytesIO
+    data = {
+        "recording": (BytesIO(b"fake webm data"), "test_recording.webm"),
+    }
+    rv = client.post(
+        f"/api/projects/{pid}/clips/{cid}/recordings",
+        data=data,
+        content_type="multipart/form-data",
+    )
+    assert rv.status_code == 201
+    rec = rv.get_json()
+    assert "id" in rec
+    assert rec["filename"].endswith(".webm")
+
+    # List recordings
+    rv = client.get(f"/api/projects/{pid}/clips/{cid}/recordings")
+    assert rv.status_code == 200
+    recs = rv.get_json()
+    assert len(recs) == 1
+    assert recs[0]["id"] == rec["id"]
+
+
+def test_upload_recording_with_duration(client, tmp_path):
+    pid, cid = _make_project_with_clip(client)
+
+    from io import BytesIO
+    data = {
+        "recording": (BytesIO(b"fake"), "rec.webm"),
+        "duration": "45",
+    }
+    rv = client.post(
+        f"/api/projects/{pid}/clips/{cid}/recordings",
+        data=data,
+        content_type="multipart/form-data",
+    )
+    assert rv.status_code == 201
+    assert rv.get_json()["duration"] == "45"
+
+
+def test_upload_recording_no_file(client):
+    pid, cid = _make_project_with_clip(client)
+    rv = client.post(f"/api/projects/{pid}/clips/{cid}/recordings",
+                     data={}, content_type="multipart/form-data")
+    assert rv.status_code == 400
+
+
+def test_delete_recording(client, tmp_path):
+    pid, cid = _make_project_with_clip(client)
+
+    from io import BytesIO
+    rv = client.post(
+        f"/api/projects/{pid}/clips/{cid}/recordings",
+        data={"recording": (BytesIO(b"data"), "rec.webm")},
+        content_type="multipart/form-data",
+    )
+    rec_id = rv.get_json()["id"]
+
+    rv = client.delete(f"/api/projects/{pid}/clips/{cid}/recordings/{rec_id}")
+    assert rv.status_code == 200
+
+    rv = client.get(f"/api/projects/{pid}/clips/{cid}/recordings")
+    assert len(rv.get_json()) == 0
+
+
+def test_delete_recording_not_found(client):
+    pid, cid = _make_project_with_clip(client)
+    rv = client.delete(f"/api/projects/{pid}/clips/{cid}/recordings/nope")
+    assert rv.status_code == 404
+
+
+def test_serve_recording(client, tmp_path):
+    pid, cid = _make_project_with_clip(client)
+
+    from io import BytesIO
+    content = b"fake webm content here"
+    rv = client.post(
+        f"/api/projects/{pid}/clips/{cid}/recordings",
+        data={"recording": (BytesIO(content), "rec.webm")},
+        content_type="multipart/form-data",
+    )
+    filename = rv.get_json()["filename"]
+
+    rv = client.get(f"/recordings/{filename}")
+    assert rv.status_code == 200
+    assert rv.data == content
+
+
+def test_recording_clip_not_found(client):
+    rv = client.post("/api/projects", json={"name": "Rec404"})
+    pid = rv.get_json()["id"]
+    rv = client.get(f"/api/projects/{pid}/clips/nope/recordings")
+    assert rv.status_code == 404
+
+    from io import BytesIO
+    rv = client.post(
+        f"/api/projects/{pid}/clips/nope/recordings",
+        data={"recording": (BytesIO(b"x"), "r.webm")},
+        content_type="multipart/form-data",
+    )
+    assert rv.status_code == 404
+
+
+def test_clip_includes_recordings_field(client):
+    """New clips should have an empty recordings array."""
+    rv = client.post("/api/projects", json={"name": "RecField"})
+    pid = rv.get_json()["id"]
+    rv = client.post(f"/api/projects/{pid}/clips", json={
+        "tag_type": "Goal", "start": 1, "end": 5
+    })
+    clip = rv.get_json()
+    assert "recordings" in clip
+    assert clip["recordings"] == []

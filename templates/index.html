@@ -71,6 +71,12 @@
           <button id="btn-ann-done" class="ann-action-btn ann-done-btn">Done</button>
         </div>
         <div id="ann-list" class="ann-list"></div>
+        <div id="rec-controls" class="rec-controls">
+          <button id="btn-rec-start" class="rec-btn rec-start-btn" title="Record analysis session with voiceover">Record</button>
+          <button id="btn-rec-stop" class="rec-btn rec-stop-btn" title="Stop recording" style="display:none">Stop</button>
+          <span id="rec-timer" class="rec-timer" style="display:none">0:00</span>
+          <span id="rec-status" class="rec-status"></span>
+        </div>
       </div>
 
       <!-- Tagging controls -->
@@ -156,7 +162,17 @@
   </div>
 </div>
 
+<!-- ── Recordings Modal ──────────────────────────────────────────────── -->
+<div id="rec-modal" class="modal-overlay">
+  <div class="modal">
+    <h3>Clip Recordings</h3>
+    <div id="rec-list"></div>
+    <button id="btn-close-rec-modal" class="close-modal-btn">Done</button>
+  </div>
+</div>
+
 <script src="/static/js/annotations.js"></script>
+<script src="/static/js/recording.js"></script>
 <script src="/static/js/app.js"></script>
 </body>
 </html>
