@@ -572,6 +572,309 @@ def serve_recording(filename):
     return send_from_directory(RECORDINGS_DIR, filename)
 
 
+# ── Video Editing ─────────────────────────────────────────────────────
+
+def _ffmpeg_cut(input_path, output_path, start=None, end=None, duration=None):
+    """Cut a segment from a video using ffmpeg. Returns (success, error)."""
+    cmd = ["ffmpeg", "-y"]
+    if start is not None:
+        cmd += ["-ss", str(start)]
+    cmd += ["-i", input_path]
+    if duration is not None:
+        cmd += ["-t", str(duration)]
+    elif end is not None:
+        if start is not None:
+            cmd += ["-t", str(end - start)]
+        else:
+            cmd += ["-t", str(end)]
+    cmd += ["-c", "copy", "-movflags", "+faststart",
+            "-avoid_negative_ts", "make_zero", output_path]
+    try:
+        result = subprocess.run(cmd, capture_output=True, timeout=300)
+        if result.returncode != 0:
+            return False, result.stderr.decode()[-300:]
+        return True, None
+    except FileNotFoundError:
+        return False, "ffmpeg not found"
+    except subprocess.TimeoutExpired:
+        return False, "Operation timed out"
+
+
+def _ffmpeg_concat(segment_paths, output_path):
+    """Concatenate video segments using ffmpeg. Returns (success, error)."""
+    tmpdir = tempfile.mkdtemp()
+    concat_file = os.path.join(tmpdir, "concat.txt")
+    with open(concat_file, "w") as f:
+        for seg in segment_paths:
+            f.write(f"file '{seg}'\n")
+    try:
+        # Re-encode for reliable concat (segments may have different keyframe alignment)
+        result = subprocess.run([
+            "ffmpeg", "-y",
+            "-f", "concat", "-safe", "0",
+            "-i", concat_file,
+            "-c:v", "libx264", "-c:a", "aac",
+            "-movflags", "+faststart",
+            output_path,
+        ], capture_output=True, timeout=600)
+        if result.returncode != 0:
+            return False, result.stderr.decode()[-300:]
+        return True, None
+    except FileNotFoundError:
+        return False, "ffmpeg not found"
+    except subprocess.TimeoutExpired:
+        return False, "Operation timed out"
+
+
+def _get_video_path(project):
+    """Get the video file path for a project, or None."""
+    if not project.get("video_filename"):
+        return None
+    path = os.path.join(VIDEOS_DIR, project["video_filename"])
+    return path if os.path.exists(path) else None
+
+
+def _adjust_clips_after_edit(clips, time_offset, removed_ranges=None):
+    """Adjust clip timestamps after a video edit.
+
+    time_offset: subtract this from all timestamps (for trim start removal).
+    removed_ranges: list of (start, end) ranges removed from video.
+    Returns adjusted clips (clips fully inside removed ranges are dropped).
+    """
+    adjusted = []
+    for c in clips:
+        cs, ce = c["start"], c["end"]
+
+        if removed_ranges:
+            skip = False
+            total_removed_before = 0
+            for rs, re in removed_ranges:
+                # Clip fully inside removed range -> drop it
+                if cs >= rs and ce <= re:
+                    skip = True
+                    break
+                # Removed range fully before clip -> shift
+                if re <= cs:
+                    total_removed_before += (re - rs)
+                # Partial overlap -> clamp
+                elif rs < ce and re > cs:
+                    # Clip starts before removal
+                    if cs < rs:
+                        ce = min(ce, rs)
+                    else:
+                        cs = re
+                        total_removed_before += (re - rs) - (cs - re) if cs > re else 0
+            if skip:
+                continue
+            cs -= total_removed_before
+            ce -= total_removed_before
+        else:
+            cs -= time_offset
+            ce -= time_offset
+
+        cs = max(cs, 0)
+        if ce > cs:
+            clip_copy = dict(c)
+            clip_copy["start"] = round(cs, 3)
+            clip_copy["end"] = round(ce, 3)
+            adjusted.append(clip_copy)
+    return adjusted
+
+
+@app.route("/api/projects/<project_id>/video/trim", methods=["POST"])
+def trim_video(project_id):
+    """Trim the video to keep only the segment between start and end."""
+    projects = _load_projects()
+    if project_id not in projects:
+        return jsonify({"error": "Project not found"}), 404
+
+    project = projects[project_id]
+    video_path = _get_video_path(project)
+    if not video_path:
+        return jsonify({"error": "No video uploaded"}), 400
+
+    data = request.json or {}
+    start = data.get("start")
+    end = data.get("end")
+    if start is None or end is None:
+        return jsonify({"error": "Both start and end times are required"}), 400
+    if end <= start:
+        return jsonify({"error": "End must be after start"}), 400
+
+    ext = os.path.splitext(video_path)[1]
+    output_path = os.path.join(VIDEOS_DIR, f"{project_id}_trimmed{ext}")
+    ok, err = _ffmpeg_cut(video_path, output_path, start=start, end=end)
+    if not ok:
+        return jsonify({"error": f"Trim failed: {err}"}), 500
+
+    # Replace the original video
+    os.replace(output_path, video_path)
+
+    # Adjust clip timestamps
+    project["clips"] = _adjust_clips_after_edit(project["clips"], time_offset=start)
+    _save_projects(projects)
+
+    return jsonify({"ok": True, "message": f"Trimmed to {start}s - {end}s"})
+
+
+@app.route("/api/projects/<project_id>/video/split", methods=["POST"])
+def split_video(project_id):
+    """Split the video at a timestamp into two projects."""
+    projects = _load_projects()
+    if project_id not in projects:
+        return jsonify({"error": "Project not found"}), 404
+
+    project = projects[project_id]
+    video_path = _get_video_path(project)
+    if not video_path:
+        return jsonify({"error": "No video uploaded"}), 400
+
+    data = request.json or {}
+    split_at = data.get("split_at")
+    if split_at is None:
+        return jsonify({"error": "split_at timestamp is required"}), 400
+    if split_at <= 0:
+        return jsonify({"error": "split_at must be positive"}), 400
+
+    ext = os.path.splitext(video_path)[1]
+
+    # Cut part 1: 0 to split_at
+    part1_path = os.path.join(VIDEOS_DIR, f"{project_id}_part1{ext}")
+    ok, err = _ffmpeg_cut(video_path, part1_path, start=0, end=split_at)
+    if not ok:
+        return jsonify({"error": f"Split failed (part 1): {err}"}), 500
+
+    # Cut part 2: split_at to end
+    part2_path = os.path.join(VIDEOS_DIR, f"{project_id}_part2{ext}")
+    ok, err = _ffmpeg_cut(video_path, part2_path, start=split_at)
+    if not ok:
+        if os.path.exists(part1_path):
+            os.remove(part1_path)
+        return jsonify({"error": f"Split failed (part 2): {err}"}), 500
+
+    # Create new project for part 2
+    new_id = str(uuid.uuid4())[:8]
+    new_video_filename = f"{new_id}{ext}"
+    os.rename(part2_path, os.path.join(VIDEOS_DIR, new_video_filename))
+
+    # Part 2 clips: those starting after split_at, shifted back
+    part2_clips = _adjust_clips_after_edit(
+        [c for c in project["clips"] if c["start"] >= split_at],
+        time_offset=split_at
+    )
+
+    projects[new_id] = {
+        "id": new_id,
+        "name": f"{project['name']} (Part 2)",
+        "video_filename": new_video_filename,
+        "tag_types": list(project["tag_types"]),
+        "players": list(project.get("players", [])),
+        "clips": part2_clips,
+    }
+
+    # Replace original video with part 1
+    os.replace(part1_path, video_path)
+
+    # Keep only clips before split_at in original project
+    project["clips"] = [c for c in project["clips"] if c["end"] <= split_at]
+    project["name"] = f"{project['name']} (Part 1)" if "(Part" not in project["name"] else project["name"]
+
+    _save_projects(projects)
+    return jsonify({
+        "ok": True,
+        "original_project": project_id,
+        "new_project": new_id,
+        "message": f"Split at {split_at}s into two projects",
+    })
+
+
+@app.route("/api/projects/<project_id>/video/cut", methods=["POST"])
+def cut_video(project_id):
+    """Remove a section from the middle of the video (e.g., halftime)."""
+    projects = _load_projects()
+    if project_id not in projects:
+        return jsonify({"error": "Project not found"}), 404
+
+    project = projects[project_id]
+    video_path = _get_video_path(project)
+    if not video_path:
+        return jsonify({"error": "No video uploaded"}), 400
+
+    data = request.json or {}
+    cut_start = data.get("cut_start")
+    cut_end = data.get("cut_end")
+    if cut_start is None or cut_end is None:
+        return jsonify({"error": "Both cut_start and cut_end are required"}), 400
+    if cut_end <= cut_start:
+        return jsonify({"error": "cut_end must be after cut_start"}), 400
+
+    ext = os.path.splitext(video_path)[1]
+    tmpdir = tempfile.mkdtemp()
+
+    # Segment before the cut
+    seg1_path = os.path.join(tmpdir, f"seg1{ext}")
+    ok, err = _ffmpeg_cut(video_path, seg1_path, start=0, end=cut_start)
+    if not ok:
+        return jsonify({"error": f"Cut failed (segment 1): {err}"}), 500
+
+    # Segment after the cut
+    seg2_path = os.path.join(tmpdir, f"seg2{ext}")
+    ok, err = _ffmpeg_cut(video_path, seg2_path, start=cut_end)
+    if not ok:
+        return jsonify({"error": f"Cut failed (segment 2): {err}"}), 500
+
+    # Concatenate the two segments
+    output_path = os.path.join(tmpdir, f"output{ext}")
+    ok, err = _ffmpeg_concat([seg1_path, seg2_path], output_path)
+    if not ok:
+        return jsonify({"error": f"Cut concat failed: {err}"}), 500
+
+    # Replace original
+    os.replace(output_path, video_path)
+
+    # Adjust clips: drop those inside the cut, shift those after
+    cut_duration = cut_end - cut_start
+    adjusted = []
+    for c in project["clips"]:
+        cs, ce = c["start"], c["end"]
+        # Fully inside the cut -> drop
+        if cs >= cut_start and ce <= cut_end:
+            continue
+        # Fully before the cut -> keep as-is
+        if ce <= cut_start:
+            adjusted.append(c)
+            continue
+        # Fully after the cut -> shift back
+        if cs >= cut_end:
+            clip_copy = dict(c)
+            clip_copy["start"] = round(cs - cut_duration, 3)
+            clip_copy["end"] = round(ce - cut_duration, 3)
+            adjusted.append(clip_copy)
+            continue
+        # Partial overlap with cut start -> clamp end
+        if cs < cut_start and ce > cut_start:
+            clip_copy = dict(c)
+            clip_copy["end"] = round(cut_start, 3)
+            if clip_copy["end"] > clip_copy["start"]:
+                adjusted.append(clip_copy)
+            continue
+        # Partial overlap with cut end -> clamp start, shift
+        if cs < cut_end and ce > cut_end:
+            clip_copy = dict(c)
+            clip_copy["start"] = round(cut_start, 3)
+            clip_copy["end"] = round(ce - cut_duration, 3)
+            if clip_copy["end"] > clip_copy["start"]:
+                adjusted.append(clip_copy)
+
+    project["clips"] = adjusted
+    _save_projects(projects)
+
+    return jsonify({
+        "ok": True,
+        "message": f"Removed {cut_start}s - {cut_end}s ({cut_duration}s)",
+    })
+
+
 # ── Export ─────────────────────────────────────────────────────────────
 
 def _filter_clips(project, params):

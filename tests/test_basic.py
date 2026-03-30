@@ -919,3 +919,125 @@ def test_import_case_insensitive_dedup(client):
     data = rv.get_json()
     assert data["imported"] == 1
     assert data["skipped"] == 1
+
+
+# ── Video Editing Tests ──────────────────────────────────────────────
+
+def test_trim_no_video(client):
+    rv = client.post("/api/projects", json={"name": "Trim No Video"})
+    pid = rv.get_json()["id"]
+    rv = client.post(f"/api/projects/{pid}/video/trim", json={"start": 0, "end": 10})
+    assert rv.status_code == 400
+    assert "No video" in rv.get_json()["error"]
+
+
+def test_trim_missing_params(client):
+    rv = client.post("/api/projects", json={"name": "Trim Bad"})
+    pid = rv.get_json()["id"]
+    # Need a video for the check to reach param validation
+    import app as application
+    projects = application._load_projects()
+    projects[pid]["video_filename"] = "fake.mp4"
+    application._save_projects(projects)
+    # Create dummy file
+    video_path = os.path.join(str(application.VIDEOS_DIR), "fake.mp4")
+    os.makedirs(os.path.dirname(video_path), exist_ok=True)
+    with open(video_path, "wb") as f:
+        f.write(b"fake")
+
+    rv = client.post(f"/api/projects/{pid}/video/trim", json={"start": 0})
+    assert rv.status_code == 400
+    assert "required" in rv.get_json()["error"]
+
+
+def test_trim_invalid_range(client, tmp_path):
+    rv = client.post("/api/projects", json={"name": "Trim Range"})
+    pid = rv.get_json()["id"]
+    import app as application
+    video_path = os.path.join(str(tmp_path), "videos", f"{pid}.mp4")
+    with open(video_path, "wb") as f:
+        f.write(b"x")
+    projects = application._load_projects()
+    projects[pid]["video_filename"] = f"{pid}.mp4"
+    application._save_projects(projects)
+
+    rv = client.post(f"/api/projects/{pid}/video/trim", json={"start": 10, "end": 5})
+    assert rv.status_code == 400
+    assert "after" in rv.get_json()["error"]
+
+
+def test_split_no_video(client):
+    rv = client.post("/api/projects", json={"name": "Split No Video"})
+    pid = rv.get_json()["id"]
+    rv = client.post(f"/api/projects/{pid}/video/split", json={"split_at": 30})
+    assert rv.status_code == 400
+
+
+def test_split_missing_param(client, tmp_path):
+    rv = client.post("/api/projects", json={"name": "Split Bad"})
+    pid = rv.get_json()["id"]
+    import app as application
+    video_path = os.path.join(str(tmp_path), "videos", f"{pid}.mp4")
+    with open(video_path, "wb") as f:
+        f.write(b"x")
+    projects = application._load_projects()
+    projects[pid]["video_filename"] = f"{pid}.mp4"
+    application._save_projects(projects)
+
+    rv = client.post(f"/api/projects/{pid}/video/split", json={})
+    assert rv.status_code == 400
+    assert "required" in rv.get_json()["error"]
+
+
+def test_cut_no_video(client):
+    rv = client.post("/api/projects", json={"name": "Cut No Video"})
+    pid = rv.get_json()["id"]
+    rv = client.post(f"/api/projects/{pid}/video/cut", json={"cut_start": 10, "cut_end": 20})
+    assert rv.status_code == 400
+
+
+def test_cut_invalid_range(client, tmp_path):
+    rv = client.post("/api/projects", json={"name": "Cut Range"})
+    pid = rv.get_json()["id"]
+    import app as application
+    video_path = os.path.join(str(tmp_path), "videos", f"{pid}.mp4")
+    with open(video_path, "wb") as f:
+        f.write(b"x")
+    projects = application._load_projects()
+    projects[pid]["video_filename"] = f"{pid}.mp4"
+    application._save_projects(projects)
+
+    rv = client.post(f"/api/projects/{pid}/video/cut", json={"cut_start": 30, "cut_end": 10})
+    assert rv.status_code == 400
+
+
+def test_edit_project_not_found(client):
+    rv = client.post("/api/projects/nope/video/trim", json={"start": 0, "end": 10})
+    assert rv.status_code == 404
+    rv = client.post("/api/projects/nope/video/split", json={"split_at": 10})
+    assert rv.status_code == 404
+    rv = client.post("/api/projects/nope/video/cut", json={"cut_start": 0, "cut_end": 10})
+    assert rv.status_code == 404
+
+
+# ── Clip Adjustment Unit Tests ────────────────────────────────────────
+
+def test_adjust_clips_trim():
+    """Clips should be shifted back when trimming removes the start."""
+    import app as application
+    clips = [
+        {"id": "a", "start": 5, "end": 10, "tag_type": "Goal"},
+        {"id": "b", "start": 15, "end": 20, "tag_type": "Shot"},
+        {"id": "c", "start": 25, "end": 30, "tag_type": "Pass"},
+    ]
+    # Trim to 10-30 means offset = 10
+    result = application._adjust_clips_after_edit(clips, time_offset=10)
+    assert len(result) == 2  # clip "a" (5-10) is fully before trim, becomes negative -> clamped
+    # clip "b" shifts from 15-20 to 5-10
+    b = [c for c in result if c["id"] == "b"][0]
+    assert b["start"] == 5
+    assert b["end"] == 10
+    # clip "c" shifts from 25-30 to 15-20
+    c = [c for c in result if c["id"] == "c"][0]
+    assert c["start"] == 15
+    assert c["end"] == 20

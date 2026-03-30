@@ -677,6 +677,100 @@ playClip = function(clip) {
   _origPlayClip(clip);
 };
 
+/* ── Video Editor ─────────────────────────────────────────────────── */
+const $editorModal = document.getElementById("editor-modal");
+
+document.getElementById("btn-edit-video").addEventListener("click", () => {
+  if (!currentProject || !currentProject.video_filename) {
+    return alert("No video loaded in this project.");
+  }
+  // Pre-fill end with video duration if available
+  if ($video.duration) {
+    document.getElementById("trim-end").value = Math.floor($video.duration * 10) / 10;
+  }
+  document.getElementById("editor-status").textContent = "";
+  $editorModal.classList.add("active");
+});
+
+document.getElementById("btn-close-editor").addEventListener("click", () => {
+  $editorModal.classList.remove("active");
+});
+
+// Tab switching
+document.querySelectorAll(".editor-tab").forEach(tab => {
+  tab.addEventListener("click", () => {
+    document.querySelectorAll(".editor-tab").forEach(t => t.classList.remove("active"));
+    document.querySelectorAll(".editor-pane").forEach(p => p.classList.remove("active"));
+    tab.classList.add("active");
+    document.getElementById(`editor-tab-${tab.dataset.tab}`).classList.add("active");
+  });
+});
+
+// "Use current" buttons
+document.querySelectorAll(".editor-use-current").forEach(btn => {
+  btn.addEventListener("click", () => {
+    const target = document.getElementById(btn.dataset.target);
+    if (target && $video.currentTime !== undefined) {
+      target.value = Math.round($video.currentTime * 10) / 10;
+    }
+  });
+});
+
+async function doEditorAction(url, body, actionBtn) {
+  const $status = document.getElementById("editor-status");
+  actionBtn.disabled = true;
+  $status.textContent = "Processing...";
+
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (data.error) {
+      $status.textContent = data.error;
+    } else {
+      $status.textContent = data.message || "Done!";
+      // Reload project to get updated clips and video
+      await openProject(currentProject.id);
+    }
+  } catch (e) {
+    $status.textContent = "Operation failed: " + e.message;
+  } finally {
+    actionBtn.disabled = false;
+  }
+}
+
+document.getElementById("btn-do-trim").addEventListener("click", function() {
+  const start = parseFloat(document.getElementById("trim-start").value);
+  const end = parseFloat(document.getElementById("trim-end").value);
+  if (isNaN(start) || isNaN(end) || end <= start) {
+    return alert("Enter valid start and end times.");
+  }
+  if (!confirm(`This will permanently trim the video to ${start}s - ${end}s. Clips outside this range will be removed. Continue?`)) return;
+  doEditorAction(`/api/projects/${currentProject.id}/video/trim`, { start, end }, this);
+});
+
+document.getElementById("btn-do-split").addEventListener("click", function() {
+  const splitAt = parseFloat(document.getElementById("split-at").value);
+  if (isNaN(splitAt) || splitAt <= 0) {
+    return alert("Enter a valid split point.");
+  }
+  if (!confirm(`This will split the video at ${splitAt}s into two separate projects. Continue?`)) return;
+  doEditorAction(`/api/projects/${currentProject.id}/video/split`, { split_at: splitAt }, this);
+});
+
+document.getElementById("btn-do-cut").addEventListener("click", function() {
+  const cutStart = parseFloat(document.getElementById("cut-start").value);
+  const cutEnd = parseFloat(document.getElementById("cut-end").value);
+  if (isNaN(cutStart) || isNaN(cutEnd) || cutEnd <= cutStart) {
+    return alert("Enter valid cut start and end times.");
+  }
+  if (!confirm(`This will permanently remove ${cutStart}s - ${cutEnd}s from the video. Continue?`)) return;
+  doEditorAction(`/api/projects/${currentProject.id}/video/cut`, { cut_start: cutStart, cut_end: cutEnd }, this);
+});
+
 /* ── Recording: Wiring ────────────────────────────────────────────── */
 
 // Hide record button if not supported
