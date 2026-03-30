@@ -536,7 +536,9 @@ document.getElementById("roster-upload").addEventListener("change", async (e) =>
       currentProject.players.push(...data.players);
       renderPlayerList();
       populatePlayerSelectors();
-      $status.textContent = `Imported ${data.imported} player${data.imported !== 1 ? "s" : ""}`;
+      let msg = `Imported ${data.imported} player${data.imported !== 1 ? "s" : ""}`;
+      if (data.skipped) msg += `, ${data.skipped} duplicate${data.skipped !== 1 ? "s" : ""} skipped`;
+      $status.textContent = msg;
     }
   } catch (err) {
     $status.textContent = "Import failed";

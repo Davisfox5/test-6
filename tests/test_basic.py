@@ -805,3 +805,117 @@ def test_import_roster_appends_to_existing(client):
 
     rv = client.get(f"/api/projects/{pid}/players")
     assert len(rv.get_json()) == 2
+
+
+# ── Deduplication Tests ───────────────────────────────────────────────
+
+def test_manual_add_duplicate_rejected(client):
+    """Adding a player with the same name and number should return 409."""
+    rv = client.post("/api/projects", json={"name": "Dedup Manual"})
+    pid = rv.get_json()["id"]
+
+    rv = client.post(f"/api/projects/{pid}/players", json={"name": "Alice", "number": "10"})
+    assert rv.status_code == 201
+
+    rv = client.post(f"/api/projects/{pid}/players", json={"name": "Alice", "number": "10"})
+    assert rv.status_code == 409
+    assert "already exists" in rv.get_json()["error"]
+
+    rv = client.get(f"/api/projects/{pid}/players")
+    assert len(rv.get_json()) == 1
+
+
+def test_manual_add_case_insensitive_duplicate(client):
+    """Dedup should be case-insensitive on name."""
+    rv = client.post("/api/projects", json={"name": "Dedup Case"})
+    pid = rv.get_json()["id"]
+
+    client.post(f"/api/projects/{pid}/players", json={"name": "Bob Jones", "number": "7"})
+    rv = client.post(f"/api/projects/{pid}/players", json={"name": "bob jones", "number": "7"})
+    assert rv.status_code == 409
+
+    rv = client.get(f"/api/projects/{pid}/players")
+    assert len(rv.get_json()) == 1
+
+
+def test_manual_add_same_name_different_number_allowed(client):
+    """Same name but different number should be allowed (e.g., traded player)."""
+    rv = client.post("/api/projects", json={"name": "Dedup Diff Num"})
+    pid = rv.get_json()["id"]
+
+    rv = client.post(f"/api/projects/{pid}/players", json={"name": "Alice", "number": "10"})
+    assert rv.status_code == 201
+    rv = client.post(f"/api/projects/{pid}/players", json={"name": "Alice", "number": "22"})
+    assert rv.status_code == 201
+
+    rv = client.get(f"/api/projects/{pid}/players")
+    assert len(rv.get_json()) == 2
+
+
+def test_import_skips_duplicates_against_existing(client):
+    """Import should skip players already in the roster."""
+    rv = client.post("/api/projects", json={"name": "Import Dedup"})
+    pid = rv.get_json()["id"]
+
+    # Add existing players
+    client.post(f"/api/projects/{pid}/players", json={"name": "Alice", "number": "10"})
+    client.post(f"/api/projects/{pid}/players", json={"name": "Bob", "number": "7"})
+
+    from io import BytesIO
+    csv_data = b"Name,Number\nAlice,10\nCharlie,3\nBob,7\nDiana,5\n"
+    rv = client.post(
+        f"/api/projects/{pid}/players/import",
+        data={"file": (BytesIO(csv_data), "roster.csv")},
+        content_type="multipart/form-data",
+    )
+    assert rv.status_code == 201
+    data = rv.get_json()
+    assert data["imported"] == 2
+    assert data["skipped"] == 2
+    names = [p["name"] for p in data["players"]]
+    assert "Charlie" in names
+    assert "Diana" in names
+    assert "Alice" not in names
+
+    rv = client.get(f"/api/projects/{pid}/players")
+    assert len(rv.get_json()) == 4
+
+
+def test_import_skips_duplicates_within_file(client):
+    """If the same player appears twice in the import file, only add once."""
+    rv = client.post("/api/projects", json={"name": "File Dedup"})
+    pid = rv.get_json()["id"]
+
+    from io import BytesIO
+    csv_data = b"Name,Number\nAlice,10\nBob,7\nAlice,10\n"
+    rv = client.post(
+        f"/api/projects/{pid}/players/import",
+        data={"file": (BytesIO(csv_data), "roster.csv")},
+        content_type="multipart/form-data",
+    )
+    assert rv.status_code == 201
+    data = rv.get_json()
+    assert data["imported"] == 2
+    assert data["skipped"] == 1
+
+    rv = client.get(f"/api/projects/{pid}/players")
+    assert len(rv.get_json()) == 2
+
+
+def test_import_case_insensitive_dedup(client):
+    """Import dedup should be case-insensitive."""
+    rv = client.post("/api/projects", json={"name": "Case Import"})
+    pid = rv.get_json()["id"]
+
+    client.post(f"/api/projects/{pid}/players", json={"name": "Alice Smith", "number": "10"})
+
+    from io import BytesIO
+    csv_data = b"Name,Number\nalice smith,10\nBob,7\n"
+    rv = client.post(
+        f"/api/projects/{pid}/players/import",
+        data={"file": (BytesIO(csv_data), "roster.csv")},
+        content_type="multipart/form-data",
+    )
+    data = rv.get_json()
+    assert data["imported"] == 1
+    assert data["skipped"] == 1

@@ -151,6 +151,13 @@ def update_tag_types(project_id):
 
 # ── Players CRUD ──────────────────────────────────────────────────────
 
+def _is_duplicate_player(existing_players, name, number):
+    """Check if a player with the same name (case-insensitive) and number exists."""
+    for p in existing_players:
+        if p["name"].lower() == name.lower() and p.get("number", "") == number:
+            return True
+    return False
+
 @app.route("/api/projects/<project_id>/players", methods=["GET"])
 def list_players(project_id):
     projects = _load_projects()
@@ -171,14 +178,19 @@ def create_player(project_id):
     if not name:
         return jsonify({"error": "Player name is required"}), 400
 
+    if "players" not in projects[project_id]:
+        projects[project_id]["players"] = []
+
+    existing = projects[project_id]["players"]
+    if _is_duplicate_player(existing, name, number):
+        return jsonify({"error": f"Player '{name}' #{number} already exists".rstrip(" #")}), 409
+
     player = {
         "id": str(uuid.uuid4())[:8],
         "name": name,
         "number": number,
     }
 
-    if "players" not in projects[project_id]:
-        projects[project_id]["players"] = []
     projects[project_id]["players"].append(player)
     _save_projects(projects)
     return jsonify(player), 201
@@ -282,7 +294,9 @@ def import_roster(project_id):
     if "players" not in projects[project_id]:
         projects[project_id]["players"] = []
 
+    existing = projects[project_id]["players"]
     imported = []
+    skipped = 0
     for row in data_rows:
         if not row or name_col >= len(row):
             continue
@@ -302,16 +316,21 @@ def import_roster(project_id):
             except (ValueError, OverflowError):
                 pass
 
+        # Skip duplicates against existing roster + already-imported batch
+        if _is_duplicate_player(existing, name, number):
+            skipped += 1
+            continue
+
         player = {
             "id": str(uuid.uuid4())[:8],
             "name": name,
             "number": number,
         }
-        projects[project_id]["players"].append(player)
+        existing.append(player)
         imported.append(player)
 
     _save_projects(projects)
-    return jsonify({"imported": len(imported), "players": imported}), 201
+    return jsonify({"imported": len(imported), "skipped": skipped, "players": imported}), 201
 
 
 # ── Clips CRUD ─────────────────────────────────────────────────────────────
