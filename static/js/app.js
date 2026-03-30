@@ -137,6 +137,7 @@ async function openProject(id) {
 }
 
 document.getElementById("btn-back").addEventListener("click", () => {
+  exitAnnotationMode();
   currentProject = null;
   $video.pause();
   $video.src = "";
@@ -305,6 +306,7 @@ function renderClips() {
       ${(c.players && c.players.length) ? `<div class="clip-players">${c.players.map(pid => `<span class="player-tag">${esc(getPlayerDisplay(pid))}</span>`).join("")}</div>` : ""}
       <div class="clip-actions">
         <button class="play-btn">Play</button>
+        <button class="annotate-btn">Annotate${(c.annotations && c.annotations.length) ? ` (${c.annotations.length})` : ""}</button>
         <button class="del-btn" data-id="${c.id}">Delete</button>
       </div>
     `;
@@ -312,6 +314,14 @@ function renderClips() {
     card.querySelector(".play-btn").addEventListener("click", (e) => {
       e.stopPropagation();
       playClip(c);
+    });
+
+    card.querySelector(".annotate-btn").addEventListener("click", (e) => {
+      e.stopPropagation();
+      $video.currentTime = c.start;
+      $video.pause();
+      enterAnnotationMode(c);
+      renderAnnList();
     });
 
     card.querySelector(".del-btn").addEventListener("click", async (e) => {
@@ -561,6 +571,61 @@ document.getElementById("btn-export-video").addEventListener("click", async () =
   }
 });
 
+/* ── Annotations: Toolbar Wiring ──────────────────────────────────── */
+
+// Tool selection
+document.querySelectorAll(".ann-tool-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".ann-tool-btn").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    annTool = btn.dataset.tool;
+  });
+});
+
+// Color & width
+document.getElementById("ann-color").addEventListener("input", (e) => { annColor = e.target.value; });
+document.getElementById("ann-width").addEventListener("change", (e) => { annLineWidth = parseInt(e.target.value); });
+
+// Freeze frame
+document.getElementById("btn-ann-freeze").addEventListener("click", toggleFreezeFrame);
+document.getElementById("ann-freeze-dur").addEventListener("change", (e) => {
+  annFreezeDuration = parseFloat(e.target.value) || 2;
+});
+
+// Clear all
+document.getElementById("btn-ann-clear").addEventListener("click", () => {
+  if (annList.length === 0) return;
+  if (confirm("Remove all annotations from this clip?")) {
+    clearAllAnnotations();
+  }
+});
+
+// Done
+document.getElementById("btn-ann-done").addEventListener("click", () => {
+  exitAnnotationMode();
+  renderClips();  // refresh annotation counts
+});
+
+// Canvas mouse events
+const $annCanvas = document.getElementById("annotation-canvas");
+$annCanvas.addEventListener("mousedown", onAnnMouseDown);
+$annCanvas.addEventListener("mousemove", onAnnMouseMove);
+$annCanvas.addEventListener("mouseup", onAnnMouseUp);
+
+// Render annotations on video timeupdate
+$video.addEventListener("timeupdate", tickAnnotations);
+
+// Also render on play clip (with annotations visible)
+const _origPlayClip = playClip;
+playClip = function(clip) {
+  // If we're playing a clip that has annotations, load them for display
+  if (clip.annotations && clip.annotations.length > 0 && !annActive) {
+    annClip = clip;
+    annList = clip.annotations.map(a => ({...a, data: {...a.data}}));
+  }
+  _origPlayClip(clip);
+};
+
 /* ── Keyboard Shortcuts ───────────────────────────────────────────── */
 document.addEventListener("keydown", (e) => {
   // Only on tagging screen, not in inputs
@@ -589,4 +654,5 @@ function esc(str) {
 }
 
 /* ── Init ─────────────────────────────────────────────────────────── */
+initAnnotations($video);
 loadProjects();

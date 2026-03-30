@@ -389,3 +389,152 @@ def test_export_video_no_matching_clips(client, tmp_path):
     rv = client.post(f"/api/projects/{pid}/export/video", json={"tag_type": "Nonexistent"})
     assert rv.status_code == 400
     assert "No clips" in rv.get_json()["error"]
+
+
+# ── Annotation Tests ──────────────────────────────────────────────────
+
+def _make_project_with_clip(client):
+    """Helper: create a project with one clip for annotation tests."""
+    rv = client.post("/api/projects", json={"name": "Ann Test"})
+    pid = rv.get_json()["id"]
+    rv = client.post(f"/api/projects/{pid}/clips", json={
+        "tag_type": "Goal", "start": 10, "end": 20, "label": "Test clip"
+    })
+    cid = rv.get_json()["id"]
+    return pid, cid
+
+
+def test_create_and_list_annotations(client):
+    pid, cid = _make_project_with_clip(client)
+
+    rv = client.post(f"/api/projects/{pid}/clips/{cid}/annotations", json={
+        "type": "arrow",
+        "color": "#ff0000",
+        "lineWidth": 3,
+        "startTime": 10,
+        "endTime": 15,
+        "data": {"x1": 0.1, "y1": 0.2, "x2": 0.5, "y2": 0.6},
+    })
+    assert rv.status_code == 201
+    ann = rv.get_json()
+    assert ann["type"] == "arrow"
+    assert ann["color"] == "#ff0000"
+    assert ann["data"]["x1"] == 0.1
+    assert "id" in ann
+
+    rv = client.get(f"/api/projects/{pid}/clips/{cid}/annotations")
+    assert rv.status_code == 200
+    assert len(rv.get_json()) == 1
+
+
+def test_create_multiple_annotation_types(client):
+    pid, cid = _make_project_with_clip(client)
+
+    types_data = [
+        {"type": "arrow", "data": {"x1": 0.1, "y1": 0.2, "x2": 0.5, "y2": 0.6}},
+        {"type": "rect", "data": {"x1": 0.2, "y1": 0.3, "x2": 0.7, "y2": 0.8}},
+        {"type": "circle", "data": {"cx": 0.5, "cy": 0.5, "rx": 0.1, "ry": 0.1}},
+        {"type": "freehand", "data": {"points": [{"x": 0.1, "y": 0.1}, {"x": 0.3, "y": 0.4}]}},
+        {"type": "text", "data": {"x": 0.5, "y": 0.5, "text": "Nice play!"}},
+    ]
+    for td in types_data:
+        rv = client.post(f"/api/projects/{pid}/clips/{cid}/annotations", json={
+            **td, "color": "#00ff00", "lineWidth": 2, "startTime": 10, "endTime": 15,
+        })
+        assert rv.status_code == 201, f"Failed for type {td['type']}"
+
+    rv = client.get(f"/api/projects/{pid}/clips/{cid}/annotations")
+    assert len(rv.get_json()) == 5
+
+
+def test_invalid_annotation_type(client):
+    pid, cid = _make_project_with_clip(client)
+    rv = client.post(f"/api/projects/{pid}/clips/{cid}/annotations", json={
+        "type": "invalid", "data": {}
+    })
+    assert rv.status_code == 400
+
+
+def test_update_annotation(client):
+    pid, cid = _make_project_with_clip(client)
+
+    rv = client.post(f"/api/projects/{pid}/clips/{cid}/annotations", json={
+        "type": "rect", "color": "#ff0000", "lineWidth": 3,
+        "startTime": 10, "endTime": 15,
+        "data": {"x1": 0.1, "y1": 0.2, "x2": 0.5, "y2": 0.6},
+    })
+    aid = rv.get_json()["id"]
+
+    rv = client.put(f"/api/projects/{pid}/clips/{cid}/annotations/{aid}", json={
+        "color": "#00ff00",
+        "endTime": 18,
+    })
+    assert rv.status_code == 200
+    assert rv.get_json()["color"] == "#00ff00"
+    assert rv.get_json()["endTime"] == 18
+
+
+def test_delete_annotation(client):
+    pid, cid = _make_project_with_clip(client)
+
+    rv = client.post(f"/api/projects/{pid}/clips/{cid}/annotations", json={
+        "type": "circle", "data": {"cx": 0.5, "cy": 0.5, "rx": 0.1, "ry": 0.1},
+        "startTime": 10, "endTime": 15,
+    })
+    aid = rv.get_json()["id"]
+
+    rv = client.delete(f"/api/projects/{pid}/clips/{cid}/annotations/{aid}")
+    assert rv.status_code == 200
+
+    rv = client.get(f"/api/projects/{pid}/clips/{cid}/annotations")
+    assert len(rv.get_json()) == 0
+
+
+def test_clear_all_annotations(client):
+    pid, cid = _make_project_with_clip(client)
+
+    for i in range(3):
+        client.post(f"/api/projects/{pid}/clips/{cid}/annotations", json={
+            "type": "arrow", "data": {"x1": 0.1, "y1": 0.1, "x2": 0.5, "y2": 0.5},
+            "startTime": 10, "endTime": 15,
+        })
+
+    rv = client.get(f"/api/projects/{pid}/clips/{cid}/annotations")
+    assert len(rv.get_json()) == 3
+
+    rv = client.delete(f"/api/projects/{pid}/clips/{cid}/annotations")
+    assert rv.status_code == 200
+
+    rv = client.get(f"/api/projects/{pid}/clips/{cid}/annotations")
+    assert len(rv.get_json()) == 0
+
+
+def test_annotation_not_found(client):
+    pid, cid = _make_project_with_clip(client)
+    rv = client.put(f"/api/projects/{pid}/clips/{cid}/annotations/nope", json={})
+    assert rv.status_code == 404
+
+
+def test_annotation_clip_not_found(client):
+    rv = client.post("/api/projects", json={"name": "Ann404"})
+    pid = rv.get_json()["id"]
+    rv = client.get(f"/api/projects/{pid}/clips/nope/annotations")
+    assert rv.status_code == 404
+    rv = client.post(f"/api/projects/{pid}/clips/nope/annotations", json={
+        "type": "arrow", "data": {}
+    })
+    assert rv.status_code == 404
+
+
+def test_annotation_defaults(client):
+    pid, cid = _make_project_with_clip(client)
+    rv = client.post(f"/api/projects/{pid}/clips/{cid}/annotations", json={
+        "type": "arrow", "data": {"x1": 0, "y1": 0, "x2": 1, "y2": 1},
+    })
+    assert rv.status_code == 201
+    ann = rv.get_json()
+    # Should default startTime to clip start (10) and endTime to clip end (20)
+    assert ann["startTime"] == 10
+    assert ann["endTime"] == 20
+    assert ann["color"] == "#ff0000"
+    assert ann["lineWidth"] == 3

@@ -608,3 +608,186 @@ input, select, button { font-family: inherit; font-size: 0.9rem; }
   border-color: #3498db;
   color: #fff;
 }
+
+/* ── Annotation Canvas ────────────────────────────────────────────── */
+#annotation-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 5;
+}
+
+/* ── Annotation Toolbar ───────────────────────────────────────────── */
+.ann-toolbar {
+  display: none;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  background: #161821;
+  border: 1px solid #3498db;
+  border-radius: 6px;
+  margin-top: 4px;
+}
+
+.ann-toolbar.visible { display: flex; }
+
+.ann-tools-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.ann-tool-btn {
+  width: 34px;
+  height: 34px;
+  border: 1px solid #444;
+  border-radius: 5px;
+  background: #1a1d27;
+  color: #ccc;
+  font-size: 1.1rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.ann-tool-btn:hover { background: #2a2d3a; }
+
+.ann-tool-btn.active {
+  background: #2a5298;
+  border-color: #3498db;
+  color: #fff;
+}
+
+.ann-sep {
+  width: 1px;
+  height: 24px;
+  background: #333;
+  margin: 0 2px;
+}
+
+#ann-color {
+  width: 34px;
+  height: 34px;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+  background: transparent;
+}
+
+#ann-width {
+  padding: 5px 6px;
+  border: 1px solid #444;
+  border-radius: 5px;
+  background: #1a1d27;
+  color: #ccc;
+  font-size: 0.82rem;
+}
+
+.ann-action-btn {
+  padding: 5px 12px;
+  border: 1px solid #444;
+  border-radius: 5px;
+  background: transparent;
+  color: #ccc;
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+
+.ann-action-btn:hover { background: #2a2d3a; }
+
+.ann-action-btn.active {
+  background: #1a6b3c;
+  border-color: #27ae60;
+  color: #fff;
+}
+
+.ann-danger { color: #e74c3c; border-color: #e74c3c44; }
+.ann-danger:hover { background: rgba(231,76,60,0.15); }
+
+.ann-done-btn {
+  background: #27ae60;
+  border-color: #27ae60;
+  color: #fff;
+  font-weight: 600;
+  margin-left: auto;
+}
+.ann-done-btn:hover { background: #219a52; }
+
+.ann-freeze-dur {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 0.82rem;
+  color: #888;
+}
+
+.ann-freeze-dur input {
+  width: 50px;
+  padding: 4px 4px;
+  border: 1px solid #444;
+  border-radius: 4px;
+  background: #1a1d27;
+  color: #ccc;
+  font-size: 0.82rem;
+  text-align: center;
+}
+
+/* ── Annotation List ──────────────────────────────────────────────── */
+.ann-list {
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+.ann-list-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 0;
+  font-size: 0.8rem;
+}
+
+.ann-swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.ann-type {
+  color: #aaa;
+  min-width: 55px;
+}
+
+.ann-time {
+  color: #666;
+  font-family: "SF Mono", "Fira Code", monospace;
+  font-size: 0.75rem;
+  flex: 1;
+}
+
+.ann-del {
+  background: none;
+  border: none;
+  color: #e74c3c;
+  cursor: pointer;
+  font-size: 0.9rem;
+  padding: 0 4px;
+}
+
+.ann-empty {
+  color: #555;
+  font-size: 0.8rem;
+  font-style: italic;
+}
+
+/* Annotate button on clip cards */
+.clip-card .clip-actions .annotate-btn:hover {
+  background: rgba(52,152,219,0.2);
+  color: #3498db;
+}

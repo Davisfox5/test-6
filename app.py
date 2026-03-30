@@ -275,6 +275,98 @@ def delete_clip(project_id, clip_id):
     return jsonify({"ok": True})
 
 
+# ── Annotations CRUD ──────────────────────────────────────────────────
+
+@app.route("/api/projects/<project_id>/clips/<clip_id>/annotations", methods=["GET"])
+def list_annotations(project_id, clip_id):
+    projects = _load_projects()
+    if project_id not in projects:
+        return jsonify({"error": "Project not found"}), 404
+    for clip in projects[project_id]["clips"]:
+        if clip["id"] == clip_id:
+            return jsonify(clip.get("annotations", []))
+    return jsonify({"error": "Clip not found"}), 404
+
+
+@app.route("/api/projects/<project_id>/clips/<clip_id>/annotations", methods=["POST"])
+def create_annotation(project_id, clip_id):
+    projects = _load_projects()
+    if project_id not in projects:
+        return jsonify({"error": "Project not found"}), 404
+
+    for clip in projects[project_id]["clips"]:
+        if clip["id"] == clip_id:
+            data = request.json
+            ann = {
+                "id": str(uuid.uuid4())[:8],
+                "type": data.get("type", ""),       # arrow, rect, circle, freehand, text
+                "color": data.get("color", "#ff0000"),
+                "lineWidth": data.get("lineWidth", 3),
+                "startTime": data.get("startTime", clip["start"]),
+                "endTime": data.get("endTime", clip["end"]),
+                "data": data.get("data", {}),        # shape-specific coords (normalized 0-1)
+            }
+            if ann["type"] not in ("arrow", "rect", "circle", "freehand", "text"):
+                return jsonify({"error": "Invalid annotation type"}), 400
+            if "annotations" not in clip:
+                clip["annotations"] = []
+            clip["annotations"].append(ann)
+            _save_projects(projects)
+            return jsonify(ann), 201
+    return jsonify({"error": "Clip not found"}), 404
+
+
+@app.route("/api/projects/<project_id>/clips/<clip_id>/annotations/<ann_id>", methods=["PUT"])
+def update_annotation(project_id, clip_id, ann_id):
+    projects = _load_projects()
+    if project_id not in projects:
+        return jsonify({"error": "Project not found"}), 404
+
+    for clip in projects[project_id]["clips"]:
+        if clip["id"] == clip_id:
+            for ann in clip.get("annotations", []):
+                if ann["id"] == ann_id:
+                    data = request.json
+                    ann["color"] = data.get("color", ann["color"])
+                    ann["lineWidth"] = data.get("lineWidth", ann["lineWidth"])
+                    ann["startTime"] = data.get("startTime", ann["startTime"])
+                    ann["endTime"] = data.get("endTime", ann["endTime"])
+                    ann["data"] = data.get("data", ann["data"])
+                    _save_projects(projects)
+                    return jsonify(ann)
+            return jsonify({"error": "Annotation not found"}), 404
+    return jsonify({"error": "Clip not found"}), 404
+
+
+@app.route("/api/projects/<project_id>/clips/<clip_id>/annotations/<ann_id>", methods=["DELETE"])
+def delete_annotation(project_id, clip_id, ann_id):
+    projects = _load_projects()
+    if project_id not in projects:
+        return jsonify({"error": "Project not found"}), 404
+
+    for clip in projects[project_id]["clips"]:
+        if clip["id"] == clip_id:
+            anns = clip.get("annotations", [])
+            clip["annotations"] = [a for a in anns if a["id"] != ann_id]
+            _save_projects(projects)
+            return jsonify({"ok": True})
+    return jsonify({"error": "Clip not found"}), 404
+
+
+@app.route("/api/projects/<project_id>/clips/<clip_id>/annotations", methods=["DELETE"])
+def clear_annotations(project_id, clip_id):
+    projects = _load_projects()
+    if project_id not in projects:
+        return jsonify({"error": "Project not found"}), 404
+
+    for clip in projects[project_id]["clips"]:
+        if clip["id"] == clip_id:
+            clip["annotations"] = []
+            _save_projects(projects)
+            return jsonify({"ok": True})
+    return jsonify({"error": "Clip not found"}), 404
+
+
 # ── Export ─────────────────────────────────────────────────────────────
 
 def _filter_clips(project, params):

@@ -42,6 +42,35 @@
           </label>
         </div>
         <video id="game-video" controls></video>
+        <canvas id="annotation-canvas"></canvas>
+      </div>
+
+      <!-- Annotation Toolbar -->
+      <div id="ann-toolbar" class="ann-toolbar">
+        <div class="ann-tools-row">
+          <button class="ann-tool-btn active" data-tool="arrow" title="Arrow">&#8599;</button>
+          <button class="ann-tool-btn" data-tool="rect" title="Rectangle">&#9633;</button>
+          <button class="ann-tool-btn" data-tool="circle" title="Circle">&#9675;</button>
+          <button class="ann-tool-btn" data-tool="freehand" title="Freehand">&#9998;</button>
+          <button class="ann-tool-btn" data-tool="text" title="Text">T</button>
+          <span class="ann-sep"></span>
+          <input type="color" id="ann-color" value="#ff0000" title="Color">
+          <select id="ann-width" title="Line width">
+            <option value="2">Thin</option>
+            <option value="3" selected>Medium</option>
+            <option value="5">Thick</option>
+            <option value="8">Extra thick</option>
+          </select>
+          <span class="ann-sep"></span>
+          <button id="btn-ann-freeze" class="ann-action-btn" title="Freeze frame: annotations drawn will show for a fixed duration at this timestamp">Freeze Frame</button>
+          <label class="ann-freeze-dur" title="Freeze duration (seconds)">
+            <input type="number" id="ann-freeze-dur" value="2" min="0.5" max="10" step="0.5">s
+          </label>
+          <span class="ann-sep"></span>
+          <button id="btn-ann-clear" class="ann-action-btn ann-danger" title="Remove all annotations from this clip">Clear All</button>
+          <button id="btn-ann-done" class="ann-action-btn ann-done-btn">Done</button>
+        </div>
+        <div id="ann-list" class="ann-list"></div>
       </div>
 
       <!-- Tagging controls -->
@@ -127,6 +156,7 @@
   </div>
 </div>
 
+<script src="/static/js/annotations.js"></script>
 <script src="/static/js/app.js"></script>
 </body>
 </html>
