@@ -155,3 +155,109 @@ def test_project_not_found(client):
     assert client.delete("/api/projects/nope").status_code == 404
     assert client.post("/api/projects/nope/clips", json={}).status_code == 404
     assert client.get("/api/projects/nope/clips").status_code == 404
+
+
+# ── Player Tests ───────────────────────────────────────────────────────
+
+def test_create_and_list_players(client):
+    rv = client.post("/api/projects", json={"name": "Player Test"})
+    pid = rv.get_json()["id"]
+
+    rv = client.post(f"/api/projects/{pid}/players", json={
+        "name": "John Doe", "number": "10"
+    })
+    assert rv.status_code == 201
+    player = rv.get_json()
+    assert player["name"] == "John Doe"
+    assert player["number"] == "10"
+    assert "id" in player
+
+    rv = client.get(f"/api/projects/{pid}/players")
+    assert rv.status_code == 200
+    assert len(rv.get_json()) == 1
+
+
+def test_create_player_requires_name(client):
+    rv = client.post("/api/projects", json={"name": "P2"})
+    pid = rv.get_json()["id"]
+
+    rv = client.post(f"/api/projects/{pid}/players", json={"name": "", "number": "5"})
+    assert rv.status_code == 400
+
+
+def test_update_player(client):
+    rv = client.post("/api/projects", json={"name": "P3"})
+    pid = rv.get_json()["id"]
+
+    rv = client.post(f"/api/projects/{pid}/players", json={"name": "Alice", "number": "7"})
+    player_id = rv.get_json()["id"]
+
+    rv = client.put(f"/api/projects/{pid}/players/{player_id}", json={
+        "name": "Alice Smith", "number": "11"
+    })
+    assert rv.status_code == 200
+    assert rv.get_json()["name"] == "Alice Smith"
+    assert rv.get_json()["number"] == "11"
+
+
+def test_delete_player(client):
+    rv = client.post("/api/projects", json={"name": "P4"})
+    pid = rv.get_json()["id"]
+
+    rv = client.post(f"/api/projects/{pid}/players", json={"name": "Bob", "number": "3"})
+    player_id = rv.get_json()["id"]
+
+    rv = client.delete(f"/api/projects/{pid}/players/{player_id}")
+    assert rv.status_code == 200
+
+    rv = client.get(f"/api/projects/{pid}/players")
+    assert len(rv.get_json()) == 0
+
+
+def test_clip_with_players(client):
+    rv = client.post("/api/projects", json={"name": "Clip Players"})
+    pid = rv.get_json()["id"]
+
+    # Add two players
+    rv1 = client.post(f"/api/projects/{pid}/players", json={"name": "Player A", "number": "9"})
+    rv2 = client.post(f"/api/projects/{pid}/players", json={"name": "Player B", "number": "5"})
+    p1_id = rv1.get_json()["id"]
+    p2_id = rv2.get_json()["id"]
+
+    # Create clip with both players tagged
+    rv = client.post(f"/api/projects/{pid}/clips", json={
+        "tag_type": "Goal",
+        "start": 10,
+        "end": 15,
+        "label": "Nice goal",
+        "players": [p1_id, p2_id],
+    })
+    assert rv.status_code == 201
+    clip = rv.get_json()
+    assert clip["players"] == [p1_id, p2_id]
+
+    # Update clip to only one player
+    rv = client.put(f"/api/projects/{pid}/clips/{clip['id']}", json={
+        "players": [p1_id],
+    })
+    assert rv.status_code == 200
+    assert rv.get_json()["players"] == [p1_id]
+
+
+def test_clip_default_empty_players(client):
+    rv = client.post("/api/projects", json={"name": "No Players"})
+    pid = rv.get_json()["id"]
+
+    rv = client.post(f"/api/projects/{pid}/clips", json={
+        "tag_type": "Shot", "start": 1, "end": 5
+    })
+    assert rv.status_code == 201
+    assert rv.get_json()["players"] == []
+
+
+def test_player_not_found(client):
+    rv = client.post("/api/projects", json={"name": "PNF"})
+    pid = rv.get_json()["id"]
+
+    rv = client.put(f"/api/projects/{pid}/players/nonexistent", json={"name": "X"})
+    assert rv.status_code == 404

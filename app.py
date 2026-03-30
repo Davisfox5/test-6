@@ -68,6 +68,7 @@ def create_project():
             {"name": "Turnover", "color": "#e67e22"},
             {"name": "Save", "color": "#34495e"},
         ],
+        "players": [],
         "clips": [],
     }
     _save_projects(projects)
@@ -140,6 +141,69 @@ def update_tag_types(project_id):
     return jsonify(tag_types)
 
 
+# ── Players CRUD ──────────────────────────────────────────────────────
+
+@app.route("/api/projects/<project_id>/players", methods=["GET"])
+def list_players(project_id):
+    projects = _load_projects()
+    if project_id not in projects:
+        return jsonify({"error": "Project not found"}), 404
+    return jsonify(projects[project_id].get("players", []))
+
+
+@app.route("/api/projects/<project_id>/players", methods=["POST"])
+def create_player(project_id):
+    projects = _load_projects()
+    if project_id not in projects:
+        return jsonify({"error": "Project not found"}), 404
+
+    data = request.json
+    name = data.get("name", "").strip()
+    number = data.get("number", "").strip()
+    if not name:
+        return jsonify({"error": "Player name is required"}), 400
+
+    player = {
+        "id": str(uuid.uuid4())[:8],
+        "name": name,
+        "number": number,
+    }
+
+    if "players" not in projects[project_id]:
+        projects[project_id]["players"] = []
+    projects[project_id]["players"].append(player)
+    _save_projects(projects)
+    return jsonify(player), 201
+
+
+@app.route("/api/projects/<project_id>/players/<player_id>", methods=["PUT"])
+def update_player(project_id, player_id):
+    projects = _load_projects()
+    if project_id not in projects:
+        return jsonify({"error": "Project not found"}), 404
+
+    data = request.json
+    for player in projects[project_id].get("players", []):
+        if player["id"] == player_id:
+            player["name"] = data.get("name", player["name"]).strip()
+            player["number"] = data.get("number", player["number"]).strip()
+            _save_projects(projects)
+            return jsonify(player)
+    return jsonify({"error": "Player not found"}), 404
+
+
+@app.route("/api/projects/<project_id>/players/<player_id>", methods=["DELETE"])
+def delete_player(project_id, player_id):
+    projects = _load_projects()
+    if project_id not in projects:
+        return jsonify({"error": "Project not found"}), 404
+
+    players = projects[project_id].get("players", [])
+    projects[project_id]["players"] = [p for p in players if p["id"] != player_id]
+    _save_projects(projects)
+    return jsonify({"ok": True})
+
+
 # ── Clips CRUD ─────────────────────────────────────────────────────────────
 
 @app.route("/api/projects/<project_id>/clips", methods=["GET"])
@@ -164,6 +228,7 @@ def create_clip(project_id):
         "end": data.get("end", 0),
         "label": data.get("label", ""),
         "notes": data.get("notes", ""),
+        "players": data.get("players", []),
     }
 
     if clip["end"] <= clip["start"]:
@@ -188,6 +253,7 @@ def update_clip(project_id, clip_id):
             clip["end"] = data.get("end", clip["end"])
             clip["label"] = data.get("label", clip["label"])
             clip["notes"] = data.get("notes", clip["notes"])
+            clip["players"] = data.get("players", clip.get("players", []))
             _save_projects(projects)
             return jsonify(clip)
     return jsonify({"error": "Clip not found"}), 404

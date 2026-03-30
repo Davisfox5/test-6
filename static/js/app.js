@@ -31,8 +31,14 @@ const $filterSearch = document.getElementById("filter-search");
 const $clipsList    = document.getElementById("clips-list");
 const $clipCount    = document.getElementById("clip-count-num");
 
+const $filterPlayer = document.getElementById("filter-player");
+const $playerChecks = document.getElementById("player-checkboxes");
+
 const $tagModal     = document.getElementById("tag-modal");
 const $tagTypeList  = document.getElementById("tag-type-list");
+
+const $playerModal  = document.getElementById("player-modal");
+const $playerList   = document.getElementById("player-list");
 
 /* ── Utilities ────────────────────────────────────────────────────── */
 function fmt(seconds) {
@@ -123,7 +129,10 @@ async function openProject(id) {
   $markInDisp.textContent = "--:--";
   $markOutDisp.textContent = "--:--";
 
+  if (!currentProject.players) currentProject.players = [];
+
   populateTagSelectors();
+  populatePlayerSelectors();
   renderClips();
 }
 
@@ -180,6 +189,7 @@ $btnSaveClip.addEventListener("click", async () => {
       end: markOut,
       label: $clipLabel.value.trim(),
       notes: $clipNotes.value.trim(),
+      players: getSelectedPlayerIds(),
     }),
   });
 
@@ -188,6 +198,7 @@ $btnSaveClip.addEventListener("click", async () => {
   currentProject.clips.push(clip);
   $clipLabel.value = "";
   $clipNotes.value = "";
+  clearPlayerSelection();
   markIn = null;
   markOut = null;
   $markInDisp.textContent = "--:--";
@@ -205,12 +216,67 @@ function populateTagSelectors() {
   });
 }
 
+/* ── Player Selectors ─────────────────────────────────────────────── */
+function populatePlayerSelectors() {
+  const players = currentProject.players || [];
+
+  // Player checkboxes for tagging
+  $playerChecks.innerHTML = "";
+  if (players.length === 0) {
+    $playerChecks.innerHTML = '<span class="no-players-msg">No players added yet</span>';
+  } else {
+    players.forEach(p => {
+      const chip = document.createElement("label");
+      chip.className = "player-chip";
+      const display = p.number ? `#${esc(p.number)} ${esc(p.name)}` : esc(p.name);
+      chip.innerHTML = `<input type="checkbox" value="${p.id}"> ${display}`;
+      chip.addEventListener("click", () => {
+        setTimeout(() => {
+          const cb = chip.querySelector("input");
+          chip.classList.toggle("selected", cb.checked);
+        }, 0);
+      });
+      $playerChecks.appendChild(chip);
+    });
+  }
+
+  // Player filter dropdown
+  $filterPlayer.innerHTML = '<option value="">All Players</option>';
+  players.forEach(p => {
+    const display = p.number ? `#${p.number} ${p.name}` : p.name;
+    $filterPlayer.innerHTML += `<option value="${p.id}">${esc(display)}</option>`;
+  });
+}
+
+function getSelectedPlayerIds() {
+  const ids = [];
+  $playerChecks.querySelectorAll("input[type=checkbox]:checked").forEach(cb => {
+    ids.push(cb.value);
+  });
+  return ids;
+}
+
+function clearPlayerSelection() {
+  $playerChecks.querySelectorAll("input[type=checkbox]").forEach(cb => {
+    cb.checked = false;
+    cb.closest(".player-chip").classList.remove("selected");
+  });
+}
+
+function getPlayerDisplay(playerId) {
+  const p = (currentProject.players || []).find(x => x.id === playerId);
+  if (!p) return playerId;
+  return p.number ? `#${p.number} ${p.name}` : p.name;
+}
+
 /* ── Render Clips ─────────────────────────────────────────────────── */
 function filteredClips() {
   const typeFilter = $filterType.value;
+  const playerFilter = $filterPlayer.value;
   const search = $filterSearch.value.toLowerCase();
   return currentProject.clips.filter(c => {
     if (typeFilter && c.tag_type !== typeFilter) return false;
+    if (playerFilter && !(c.players || []).includes(playerFilter)) return false;
     if (search && !c.label.toLowerCase().includes(search) && !c.notes.toLowerCase().includes(search) && !c.tag_type.toLowerCase().includes(search)) return false;
     return true;
   });
@@ -236,6 +302,7 @@ function renderClips() {
       </div>
       ${c.label ? `<div class="clip-label">${esc(c.label)}</div>` : ""}
       ${c.notes ? `<div class="clip-notes">${esc(c.notes)}</div>` : ""}
+      ${(c.players && c.players.length) ? `<div class="clip-players">${c.players.map(pid => `<span class="player-tag">${esc(getPlayerDisplay(pid))}</span>`).join("")}</div>` : ""}
       <div class="clip-actions">
         <button class="play-btn">Play</button>
         <button class="del-btn" data-id="${c.id}">Delete</button>
@@ -266,6 +333,7 @@ function renderClips() {
 }
 
 $filterType.addEventListener("change", renderClips);
+$filterPlayer.addEventListener("change", renderClips);
 $filterSearch.addEventListener("input", renderClips);
 
 /* ── Play Clip ────────────────────────────────────────────────────── */
@@ -378,6 +446,56 @@ async function saveTagTypes() {
     body: JSON.stringify({ tag_types: currentProject.tag_types }),
   });
 }
+
+/* ── Player Manager ───────────────────────────────────────────────── */
+document.getElementById("btn-manage-players").addEventListener("click", () => {
+  renderPlayerList();
+  $playerModal.classList.add("active");
+});
+
+document.getElementById("btn-close-player-modal").addEventListener("click", () => {
+  $playerModal.classList.remove("active");
+});
+
+function renderPlayerList() {
+  $playerList.innerHTML = "";
+  (currentProject.players || []).forEach(p => {
+    const row = document.createElement("div");
+    row.className = "player-row";
+    row.innerHTML = `
+      <span class="player-number">${p.number ? esc(p.number) : "-"}</span>
+      <span class="player-name">${esc(p.name)}</span>
+      <button class="remove-player" data-id="${p.id}">&times;</button>
+    `;
+    row.querySelector(".remove-player").addEventListener("click", async () => {
+      await api(`/api/projects/${currentProject.id}/players/${p.id}`, { method: "DELETE" });
+      currentProject.players = currentProject.players.filter(x => x.id !== p.id);
+      renderPlayerList();
+      populatePlayerSelectors();
+      renderClips();
+    });
+    $playerList.appendChild(row);
+  });
+}
+
+document.getElementById("btn-add-player").addEventListener("click", async () => {
+  const name = document.getElementById("new-player-name").value.trim();
+  const number = document.getElementById("new-player-number").value.trim();
+  if (!name) return;
+
+  const player = await api(`/api/projects/${currentProject.id}/players`, {
+    method: "POST",
+    body: JSON.stringify({ name, number }),
+  });
+
+  if (player.error) return alert(player.error);
+
+  currentProject.players.push(player);
+  document.getElementById("new-player-name").value = "";
+  document.getElementById("new-player-number").value = "";
+  renderPlayerList();
+  populatePlayerSelectors();
+});
 
 /* ── Keyboard Shortcuts ───────────────────────────────────────────── */
 document.addEventListener("keydown", (e) => {

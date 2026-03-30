@@ -26,6 +26,7 @@
   <nav class="top-bar">
     <button id="btn-back">&larr; Projects</button>
     <h2 id="project-title"></h2>
+    <button id="btn-manage-players">Players</button>
     <button id="btn-manage-tags">Manage Tag Types</button>
   </nav>
 
@@ -59,6 +60,10 @@
         <div class="tag-row">
           <input type="text" id="clip-notes" placeholder="Notes (optional)" style="flex:1">
         </div>
+        <div class="tag-row players-row">
+          <label class="players-label">Players:</label>
+          <div id="player-checkboxes" class="player-checkboxes"></div>
+        </div>
       </div>
 
       <!-- Timeline -->
@@ -76,6 +81,9 @@
         <label>Filter:</label>
         <select id="filter-tag-type">
           <option value="">All Types</option>
+        </select>
+        <select id="filter-player">
+          <option value="">All Players</option>
         </select>
         <input type="text" id="filter-search" placeholder="Search labels...">
       </div>
@@ -96,6 +104,20 @@
       <button id="btn-add-tag-type">Add</button>
     </div>
     <button id="btn-close-modal" class="close-modal-btn">Done</button>
+  </div>
+</div>
+
+<!-- ── Player Manager Modal ──────────────────────────────────────────── -->
+<div id="player-modal" class="modal-overlay">
+  <div class="modal">
+    <h3>Manage Players</h3>
+    <div id="player-list"></div>
+    <div class="add-tag-row">
+      <input type="text" id="new-player-number" placeholder="#" style="flex:0 0 50px">
+      <input type="text" id="new-player-name" placeholder="Player name">
+      <button id="btn-add-player">Add</button>
+    </div>
+    <button id="btn-close-player-modal" class="close-modal-btn">Done</button>
   </div>
 </div>
 
