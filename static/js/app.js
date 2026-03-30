@@ -513,6 +513,40 @@ document.getElementById("btn-add-player").addEventListener("click", async () => 
   populatePlayerSelectors();
 });
 
+// Import roster from Excel/CSV
+document.getElementById("roster-upload").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  if (!file || !currentProject) return;
+
+  const $status = document.getElementById("import-status");
+  $status.textContent = "Importing...";
+
+  const fd = new FormData();
+  fd.append("file", file);
+
+  try {
+    const res = await fetch(`/api/projects/${currentProject.id}/players/import`, {
+      method: "POST",
+      body: fd,
+    });
+    const data = await res.json();
+    if (data.error) {
+      $status.textContent = data.error;
+    } else {
+      currentProject.players.push(...data.players);
+      renderPlayerList();
+      populatePlayerSelectors();
+      $status.textContent = `Imported ${data.imported} player${data.imported !== 1 ? "s" : ""}`;
+    }
+  } catch (err) {
+    $status.textContent = "Import failed";
+  }
+
+  // Reset file input so the same file can be re-uploaded
+  e.target.value = "";
+  setTimeout(() => { $status.textContent = ""; }, 4000);
+});
+
 /* ── Export ────────────────────────────────────────────────────────── */
 function buildFilterParams() {
   const params = new URLSearchParams();

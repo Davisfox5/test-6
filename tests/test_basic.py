@@ -658,3 +658,150 @@ def test_clip_includes_recordings_field(client):
     clip = rv.get_json()
     assert "recordings" in clip
     assert clip["recordings"] == []
+
+
+# ── Roster Import Tests ───────────────────────────────────────────────
+
+def test_import_roster_csv(client):
+    rv = client.post("/api/projects", json={"name": "CSV Import"})
+    pid = rv.get_json()["id"]
+
+    from io import BytesIO
+    csv_data = b"Name,Number\nAlice Smith,10\nBob Jones,7\nCharlie Brown,3\n"
+    rv = client.post(
+        f"/api/projects/{pid}/players/import",
+        data={"file": (BytesIO(csv_data), "roster.csv")},
+        content_type="multipart/form-data",
+    )
+    assert rv.status_code == 201
+    data = rv.get_json()
+    assert data["imported"] == 3
+    assert data["players"][0]["name"] == "Alice Smith"
+    assert data["players"][0]["number"] == "10"
+    assert data["players"][2]["name"] == "Charlie Brown"
+
+    # Verify they show up in the player list
+    rv = client.get(f"/api/projects/{pid}/players")
+    assert len(rv.get_json()) == 3
+
+
+def test_import_roster_csv_auto_detect_columns(client):
+    """Headers with different names should still be detected."""
+    rv = client.post("/api/projects", json={"name": "AutoDetect"})
+    pid = rv.get_json()["id"]
+
+    from io import BytesIO
+    csv_data = b"Jersey #,Player Name\n22,Jane Doe\n5,John Doe\n"
+    rv = client.post(
+        f"/api/projects/{pid}/players/import",
+        data={"file": (BytesIO(csv_data), "roster.csv")},
+        content_type="multipart/form-data",
+    )
+    assert rv.status_code == 201
+    data = rv.get_json()
+    assert data["imported"] == 2
+    assert data["players"][0]["name"] == "Jane Doe"
+    assert data["players"][0]["number"] == "22"
+
+
+def test_import_roster_csv_no_header(client):
+    """When no header matches, fall back to col A=name, col B=number."""
+    rv = client.post("/api/projects", json={"name": "NoHeader"})
+    pid = rv.get_json()["id"]
+
+    from io import BytesIO
+    csv_data = b"Alice,10\nBob,7\n"
+    rv = client.post(
+        f"/api/projects/{pid}/players/import",
+        data={"file": (BytesIO(csv_data), "roster.csv")},
+        content_type="multipart/form-data",
+    )
+    assert rv.status_code == 201
+    data = rv.get_json()
+    assert data["imported"] == 2
+    assert data["players"][0]["name"] == "Alice"
+    assert data["players"][0]["number"] == "10"
+
+
+def test_import_roster_xlsx(client):
+    import openpyxl
+    from io import BytesIO
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["Name", "Number"])
+    ws.append(["Player One", 9])
+    ws.append(["Player Two", 14])
+    buf = BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
+    rv = client.post("/api/projects", json={"name": "XLSX Import"})
+    pid = rv.get_json()["id"]
+
+    rv = client.post(
+        f"/api/projects/{pid}/players/import",
+        data={"file": (buf, "roster.xlsx")},
+        content_type="multipart/form-data",
+    )
+    assert rv.status_code == 201
+    data = rv.get_json()
+    assert data["imported"] == 2
+    assert data["players"][0]["name"] == "Player One"
+    assert data["players"][0]["number"] == "9"  # cleaned from 9.0
+
+
+def test_import_roster_skips_empty_rows(client):
+    from io import BytesIO
+    csv_data = b"Name,Number\nAlice,10\n,,\n,\nBob,7\n"
+    rv = client.post("/api/projects", json={"name": "SkipEmpty"})
+    pid = rv.get_json()["id"]
+
+    rv = client.post(
+        f"/api/projects/{pid}/players/import",
+        data={"file": (BytesIO(csv_data), "roster.csv")},
+        content_type="multipart/form-data",
+    )
+    assert rv.status_code == 201
+    assert rv.get_json()["imported"] == 2
+
+
+def test_import_roster_no_file(client):
+    rv = client.post("/api/projects", json={"name": "NoFile"})
+    pid = rv.get_json()["id"]
+    rv = client.post(f"/api/projects/{pid}/players/import",
+                     data={}, content_type="multipart/form-data")
+    assert rv.status_code == 400
+
+
+def test_import_roster_unsupported_type(client):
+    from io import BytesIO
+    rv = client.post("/api/projects", json={"name": "BadType"})
+    pid = rv.get_json()["id"]
+    rv = client.post(
+        f"/api/projects/{pid}/players/import",
+        data={"file": (BytesIO(b"data"), "roster.pdf")},
+        content_type="multipart/form-data",
+    )
+    assert rv.status_code == 400
+    assert "Unsupported" in rv.get_json()["error"]
+
+
+def test_import_roster_appends_to_existing(client):
+    """Imported players should be added to existing roster, not replace it."""
+    rv = client.post("/api/projects", json={"name": "Append"})
+    pid = rv.get_json()["id"]
+
+    # Add one player manually first
+    client.post(f"/api/projects/{pid}/players", json={"name": "Existing", "number": "1"})
+
+    from io import BytesIO
+    csv_data = b"Name,Number\nNew Player,99\n"
+    client.post(
+        f"/api/projects/{pid}/players/import",
+        data={"file": (BytesIO(csv_data), "roster.csv")},
+        content_type="multipart/form-data",
+    )
+
+    rv = client.get(f"/api/projects/{pid}/players")
+    assert len(rv.get_json()) == 2

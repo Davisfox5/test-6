@@ -158,6 +158,13 @@
       <input type="text" id="new-player-name" placeholder="Player name">
       <button id="btn-add-player">Add</button>
     </div>
+    <div class="import-roster-row">
+      <label class="import-roster-btn">
+        Import Roster (.xlsx / .csv)
+        <input type="file" id="roster-upload" accept=".xlsx,.xls,.csv" hidden>
+      </label>
+      <span id="import-status" class="import-status"></span>
+    </div>
     <button id="btn-close-player-modal" class="close-modal-btn">Done</button>
   </div>
 </div>

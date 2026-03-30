@@ -574,6 +574,37 @@ input, select, button { font-family: inherit; font-size: 0.9rem; }
   cursor: pointer;
 }
 
+/* ── Import Roster ────────────────────────────────────────────────── */
+.import-roster-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  margin-bottom: 12px;
+}
+
+.import-roster-btn {
+  display: inline-block;
+  padding: 7px 16px;
+  border: 1px dashed #555;
+  border-radius: 6px;
+  color: #aaa;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.import-roster-btn:hover {
+  background: #22263a;
+  border-color: #3498db;
+  color: #ccc;
+}
+
+.import-status {
+  font-size: 0.82rem;
+  color: #888;
+}
+
 /* ── Export Bar ────────────────────────────────────────────────────── */
 .export-bar {
   display: flex;

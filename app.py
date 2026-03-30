@@ -212,6 +212,108 @@ def delete_player(project_id, player_id):
     return jsonify({"ok": True})
 
 
+@app.route("/api/projects/<project_id>/players/import", methods=["POST"])
+def import_roster(project_id):
+    """Import players from an Excel (.xlsx/.xls) or CSV file.
+
+    Expects columns for player name and jersey number. The endpoint
+    auto-detects columns by scanning headers for keywords like 'name',
+    'player', 'number', 'jersey', '#'. If no header matches, it falls
+    back to column A = name, column B = number.
+    """
+    projects = _load_projects()
+    if project_id not in projects:
+        return jsonify({"error": "Project not found"}), 404
+
+    if "file" not in request.files:
+        return jsonify({"error": "No file provided"}), 400
+
+    f = request.files["file"]
+    fname = f.filename.lower()
+
+    rows = []
+    if fname.endswith((".xlsx", ".xls")):
+        try:
+            import openpyxl
+            wb = openpyxl.load_workbook(f, read_only=True, data_only=True)
+            ws = wb.active
+            for row in ws.iter_rows(values_only=True):
+                rows.append([str(c).strip() if c is not None else "" for c in row])
+            wb.close()
+        except Exception as e:
+            return jsonify({"error": f"Could not read Excel file: {e}"}), 400
+    elif fname.endswith(".csv"):
+        try:
+            import io as _io
+            text = f.read().decode("utf-8-sig")
+            reader = csv.reader(_io.StringIO(text))
+            for row in reader:
+                rows.append([c.strip() for c in row])
+        except Exception as e:
+            return jsonify({"error": f"Could not read CSV file: {e}"}), 400
+    else:
+        return jsonify({"error": "Unsupported file type. Upload .xlsx, .xls, or .csv"}), 400
+
+    if not rows:
+        return jsonify({"error": "File is empty"}), 400
+
+    # Auto-detect columns from header row
+    name_col = None
+    number_col = None
+    header = [h.lower() for h in rows[0]]
+    name_keywords = ["name", "player", "first", "last", "athlete"]
+    number_keywords = ["number", "jersey", "#", "no", "num"]
+
+    for i, h in enumerate(header):
+        if name_col is None and any(k in h for k in name_keywords):
+            name_col = i
+        if number_col is None and any(k in h for k in number_keywords):
+            number_col = i
+
+    has_header = name_col is not None
+    if not has_header:
+        # Fallback: col 0 = name, col 1 = number (if exists)
+        name_col = 0
+        number_col = 1 if len(rows[0]) > 1 else None
+        data_rows = rows
+    else:
+        data_rows = rows[1:]  # skip header
+
+    if "players" not in projects[project_id]:
+        projects[project_id]["players"] = []
+
+    imported = []
+    for row in data_rows:
+        if not row or name_col >= len(row):
+            continue
+        name = row[name_col].strip()
+        if not name or name.lower() == "none":
+            continue
+        number = ""
+        if number_col is not None and number_col < len(row):
+            number = row[number_col].strip()
+            if number.lower() == "none":
+                number = ""
+            # Clean up float numbers from Excel (e.g., "10.0" -> "10")
+            try:
+                num_val = float(number)
+                if num_val == int(num_val):
+                    number = str(int(num_val))
+            except (ValueError, OverflowError):
+                pass
+
+        player = {
+            "id": str(uuid.uuid4())[:8],
+            "name": name,
+            "number": number,
+        }
+        projects[project_id]["players"].append(player)
+        imported.append(player)
+
+    _save_projects(projects)
+    return jsonify({"imported": len(imported), "players": imported}), 201
+
+
 # ── Clips CRUD ─────────────────────────────────────────────────────────────
 
 @app.route("/api/projects/<project_id>/clips", methods=["GET"])
