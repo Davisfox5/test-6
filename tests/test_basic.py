@@ -261,3 +261,131 @@ def test_player_not_found(client):
 
     rv = client.put(f"/api/projects/{pid}/players/nonexistent", json={"name": "X"})
     assert rv.status_code == 404
+
+
+# ── Export Tests ───────────────────────────────────────────────────────
+
+def _make_project_with_clips(client):
+    """Helper: create a project with players and clips for export tests."""
+    rv = client.post("/api/projects", json={"name": "Export Test"})
+    pid = rv.get_json()["id"]
+
+    rv1 = client.post(f"/api/projects/{pid}/players", json={"name": "Alice", "number": "10"})
+    rv2 = client.post(f"/api/projects/{pid}/players", json={"name": "Bob", "number": "7"})
+    p1 = rv1.get_json()["id"]
+    p2 = rv2.get_json()["id"]
+
+    client.post(f"/api/projects/{pid}/clips", json={
+        "tag_type": "Goal", "start": 10, "end": 15,
+        "label": "First goal", "notes": "Header", "players": [p1],
+    })
+    client.post(f"/api/projects/{pid}/clips", json={
+        "tag_type": "Shot", "start": 20, "end": 23,
+        "label": "Wide shot", "players": [p2],
+    })
+    client.post(f"/api/projects/{pid}/clips", json={
+        "tag_type": "Goal", "start": 55, "end": 60,
+        "label": "Second goal", "players": [p1, p2],
+    })
+    return pid, p1, p2
+
+
+def test_export_csv_all_clips(client):
+    pid, _, _ = _make_project_with_clips(client)
+    rv = client.get(f"/api/projects/{pid}/export/csv")
+    assert rv.status_code == 200
+    assert rv.content_type.startswith("text/csv")
+    text = rv.data.decode("utf-8")
+    lines = text.strip().split("\n")
+    assert len(lines) == 4  # header + 3 clips
+    assert "Goal" in text
+    assert "Shot" in text
+    assert "Alice" in text
+
+
+def test_export_csv_filtered_by_tag_type(client):
+    pid, _, _ = _make_project_with_clips(client)
+    rv = client.get(f"/api/projects/{pid}/export/csv?tag_type=Goal")
+    assert rv.status_code == 200
+    text = rv.data.decode("utf-8")
+    lines = text.strip().split("\n")
+    assert len(lines) == 3  # header + 2 Goal clips
+    assert "Shot" not in text.split("\n", 1)[1]  # Not in data rows
+
+
+def test_export_csv_filtered_by_player(client):
+    pid, p1, p2 = _make_project_with_clips(client)
+    rv = client.get(f"/api/projects/{pid}/export/csv?player={p2}")
+    assert rv.status_code == 200
+    text = rv.data.decode("utf-8")
+    lines = text.strip().split("\n")
+    assert len(lines) == 3  # header + 2 clips with Bob
+
+
+def test_export_csv_filtered_by_search(client):
+    pid, _, _ = _make_project_with_clips(client)
+    rv = client.get(f"/api/projects/{pid}/export/csv?search=wide")
+    assert rv.status_code == 200
+    text = rv.data.decode("utf-8")
+    lines = text.strip().split("\n")
+    assert len(lines) == 2  # header + 1 clip
+
+
+def test_export_json_all_clips(client):
+    pid, _, _ = _make_project_with_clips(client)
+    rv = client.get(f"/api/projects/{pid}/export/json")
+    assert rv.status_code == 200
+    data = json.loads(rv.data)
+    assert data["project"] == "Export Test"
+    assert data["clip_count"] == 3
+    assert len(data["clips"]) == 3
+    # Check player info is resolved
+    goal_clip = [c for c in data["clips"] if c["label"] == "First goal"][0]
+    assert goal_clip["players"][0]["name"] == "Alice"
+    assert "duration" in goal_clip
+
+
+def test_export_json_filtered(client):
+    pid, _, _ = _make_project_with_clips(client)
+    rv = client.get(f"/api/projects/{pid}/export/json?tag_type=Shot")
+    data = json.loads(rv.data)
+    assert data["clip_count"] == 1
+    assert data["clips"][0]["tag_type"] == "Shot"
+
+
+def test_export_csv_project_not_found(client):
+    rv = client.get("/api/projects/nope/export/csv")
+    assert rv.status_code == 404
+
+
+def test_export_json_project_not_found(client):
+    rv = client.get("/api/projects/nope/export/json")
+    assert rv.status_code == 404
+
+
+def test_export_video_no_video(client):
+    rv = client.post("/api/projects", json={"name": "No Video"})
+    pid = rv.get_json()["id"]
+    client.post(f"/api/projects/{pid}/clips", json={
+        "tag_type": "Goal", "start": 1, "end": 5
+    })
+    rv = client.post(f"/api/projects/{pid}/export/video", json={})
+    assert rv.status_code == 400
+    assert "No video" in rv.get_json()["error"]
+
+
+def test_export_video_no_matching_clips(client, tmp_path):
+    rv = client.post("/api/projects", json={"name": "Empty Export"})
+    pid = rv.get_json()["id"]
+    # Create a dummy video file so the file-exists check passes
+    import app as application
+    video_path = os.path.join(str(tmp_path), "videos", f"{pid}.mp4")
+    with open(video_path, "wb") as f:
+        f.write(b"fake")
+    projects = application._load_projects()
+    projects[pid]["video_filename"] = f"{pid}.mp4"
+    application._save_projects(projects)
+
+    rv = client.post(f"/api/projects/{pid}/export/video", json={"tag_type": "Nonexistent"})
+    assert rv.status_code == 400
+    assert "No clips" in rv.get_json()["error"]

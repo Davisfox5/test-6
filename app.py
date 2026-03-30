@@ -5,9 +5,13 @@ Tag clips in game footage, categorize them, and filter/review by type.
 """
 
 import os
+import io
+import csv
 import json
 import uuid
-from flask import Flask, jsonify, request, send_from_directory, render_template
+import subprocess
+import tempfile
+from flask import Flask, jsonify, request, send_from_directory, send_file, render_template
 
 app = Flask(__name__, static_folder="static", template_folder="templates")
 
@@ -269,6 +273,193 @@ def delete_clip(project_id, clip_id):
     projects[project_id]["clips"] = [c for c in clips if c["id"] != clip_id]
     _save_projects(projects)
     return jsonify({"ok": True})
+
+
+# ── Export ─────────────────────────────────────────────────────────────
+
+def _filter_clips(project, params):
+    """Filter clips by tag_type, player, and search query string."""
+    clips = list(project["clips"])
+    tag_type = params.get("tag_type", "")
+    player = params.get("player", "")
+    search = params.get("search", "").lower()
+    clip_ids = params.get("clip_ids", "")
+
+    if clip_ids:
+        id_set = set(clip_ids.split(","))
+        clips = [c for c in clips if c["id"] in id_set]
+    if tag_type:
+        clips = [c for c in clips if c["tag_type"] == tag_type]
+    if player:
+        clips = [c for c in clips if player in c.get("players", [])]
+    if search:
+        clips = [c for c in clips if
+                 search in c.get("label", "").lower() or
+                 search in c.get("notes", "").lower() or
+                 search in c.get("tag_type", "").lower()]
+
+    clips.sort(key=lambda c: c["start"])
+    return clips
+
+
+@app.route("/api/projects/<project_id>/export/csv")
+def export_csv(project_id):
+    projects = _load_projects()
+    if project_id not in projects:
+        return jsonify({"error": "Project not found"}), 404
+
+    project = projects[project_id]
+    clips = _filter_clips(project, request.args)
+    players_map = {p["id"]: p for p in project.get("players", [])}
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Clip ID", "Tag Type", "Start (s)", "End (s)",
+                      "Duration (s)", "Label", "Notes", "Players"])
+
+    for c in clips:
+        player_names = []
+        for pid in c.get("players", []):
+            p = players_map.get(pid)
+            if p:
+                player_names.append(f"#{p['number']} {p['name']}" if p.get("number") else p["name"])
+        writer.writerow([
+            c["id"],
+            c["tag_type"],
+            round(c["start"], 2),
+            round(c["end"], 2),
+            round(c["end"] - c["start"], 2),
+            c.get("label", ""),
+            c.get("notes", ""),
+            "; ".join(player_names),
+        ])
+
+    output.seek(0)
+    safe_name = project["name"].replace(" ", "_")
+    return send_file(
+        io.BytesIO(output.getvalue().encode("utf-8")),
+        mimetype="text/csv",
+        as_attachment=True,
+        download_name=f"{safe_name}_clips.csv",
+    )
+
+
+@app.route("/api/projects/<project_id>/export/json")
+def export_json(project_id):
+    projects = _load_projects()
+    if project_id not in projects:
+        return jsonify({"error": "Project not found"}), 404
+
+    project = projects[project_id]
+    clips = _filter_clips(project, request.args)
+    players_map = {p["id"]: p for p in project.get("players", [])}
+
+    export_clips = []
+    for c in clips:
+        player_names = []
+        for pid in c.get("players", []):
+            p = players_map.get(pid)
+            if p:
+                player_names.append({"id": p["id"], "name": p["name"], "number": p.get("number", "")})
+        export_clips.append({
+            "id": c["id"],
+            "tag_type": c["tag_type"],
+            "start": round(c["start"], 2),
+            "end": round(c["end"], 2),
+            "duration": round(c["end"] - c["start"], 2),
+            "label": c.get("label", ""),
+            "notes": c.get("notes", ""),
+            "players": player_names,
+        })
+
+    payload = json.dumps({
+        "project": project["name"],
+        "clip_count": len(export_clips),
+        "clips": export_clips,
+    }, indent=2)
+
+    safe_name = project["name"].replace(" ", "_")
+    return send_file(
+        io.BytesIO(payload.encode("utf-8")),
+        mimetype="application/json",
+        as_attachment=True,
+        download_name=f"{safe_name}_clips.json",
+    )
+
+
+@app.route("/api/projects/<project_id>/export/video", methods=["POST"])
+def export_video(project_id):
+    projects = _load_projects()
+    if project_id not in projects:
+        return jsonify({"error": "Project not found"}), 404
+
+    project = projects[project_id]
+    if not project.get("video_filename"):
+        return jsonify({"error": "No video uploaded for this project"}), 400
+
+    video_path = os.path.join(VIDEOS_DIR, project["video_filename"])
+    if not os.path.exists(video_path):
+        return jsonify({"error": "Video file not found on disk"}), 404
+
+    params = request.json or {}
+    clips = _filter_clips(project, params)
+
+    if not clips:
+        return jsonify({"error": "No clips match the current filters"}), 400
+
+    try:
+        tmpdir = tempfile.mkdtemp()
+        segment_files = []
+
+        # Cut each clip segment
+        for i, c in enumerate(clips):
+            seg_path = os.path.join(tmpdir, f"seg_{i:04d}.mp4")
+            duration = c["end"] - c["start"]
+            result = subprocess.run([
+                "ffmpeg", "-y",
+                "-ss", str(c["start"]),
+                "-i", video_path,
+                "-t", str(duration),
+                "-c:v", "libx264",
+                "-c:a", "aac",
+                "-movflags", "+faststart",
+                "-avoid_negative_ts", "make_zero",
+                seg_path,
+            ], capture_output=True, timeout=120)
+            if result.returncode != 0:
+                return jsonify({"error": f"ffmpeg segment cut failed: {result.stderr.decode()[-200:]}"}), 500
+            segment_files.append(seg_path)
+
+        # Build concat list
+        concat_list_path = os.path.join(tmpdir, "concat.txt")
+        with open(concat_list_path, "w") as f:
+            for seg in segment_files:
+                f.write(f"file '{seg}'\n")
+
+        # Concatenate
+        output_path = os.path.join(tmpdir, "export.mp4")
+        result = subprocess.run([
+            "ffmpeg", "-y",
+            "-f", "concat", "-safe", "0",
+            "-i", concat_list_path,
+            "-c", "copy",
+            "-movflags", "+faststart",
+            output_path,
+        ], capture_output=True, timeout=300)
+        if result.returncode != 0:
+            return jsonify({"error": f"ffmpeg concat failed: {result.stderr.decode()[-200:]}"}), 500
+
+        safe_name = project["name"].replace(" ", "_")
+        return send_file(
+            output_path,
+            mimetype="video/mp4",
+            as_attachment=True,
+            download_name=f"{safe_name}_playlist.mp4",
+        )
+    except FileNotFoundError:
+        return jsonify({"error": "ffmpeg not found. Install ffmpeg to export video compilations."}), 500
+    except subprocess.TimeoutExpired:
+        return jsonify({"error": "Video export timed out"}), 500
 
 
 if __name__ == "__main__":

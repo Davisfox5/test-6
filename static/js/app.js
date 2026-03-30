@@ -497,6 +497,70 @@ document.getElementById("btn-add-player").addEventListener("click", async () => 
   populatePlayerSelectors();
 });
 
+/* ── Export ────────────────────────────────────────────────────────── */
+function buildFilterParams() {
+  const params = new URLSearchParams();
+  if ($filterType.value) params.set("tag_type", $filterType.value);
+  if ($filterPlayer.value) params.set("player", $filterPlayer.value);
+  if ($filterSearch.value.trim()) params.set("search", $filterSearch.value.trim());
+  return params.toString();
+}
+
+document.getElementById("btn-export-csv").addEventListener("click", () => {
+  if (!currentProject) return;
+  const qs = buildFilterParams();
+  const url = `/api/projects/${currentProject.id}/export/csv${qs ? "?" + qs : ""}`;
+  window.location.href = url;
+});
+
+document.getElementById("btn-export-json").addEventListener("click", () => {
+  if (!currentProject) return;
+  const qs = buildFilterParams();
+  const url = `/api/projects/${currentProject.id}/export/json${qs ? "?" + qs : ""}`;
+  window.location.href = url;
+});
+
+document.getElementById("btn-export-video").addEventListener("click", async () => {
+  if (!currentProject) return;
+  const btn = document.getElementById("btn-export-video");
+  btn.classList.add("exporting");
+  btn.textContent = "Exporting...";
+  btn.disabled = true;
+
+  try {
+    const body = {};
+    if ($filterType.value) body.tag_type = $filterType.value;
+    if ($filterPlayer.value) body.player = $filterPlayer.value;
+    if ($filterSearch.value.trim()) body.search = $filterSearch.value.trim();
+
+    const res = await fetch(`/api/projects/${currentProject.id}/export/video`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    if (!res.ok) {
+      const err = await res.json();
+      alert(err.error || "Export failed");
+      return;
+    }
+
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${currentProject.name.replace(/ /g, "_")}_playlist.mp4`;
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    alert("Export failed: " + e.message);
+  } finally {
+    btn.classList.remove("exporting");
+    btn.textContent = "Video";
+    btn.disabled = false;
+  }
+});
+
 /* ── Keyboard Shortcuts ───────────────────────────────────────────── */
 document.addEventListener("keydown", (e) => {
   // Only on tagging screen, not in inputs
